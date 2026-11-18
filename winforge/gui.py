@@ -19,7 +19,7 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QProcess, Qt, QTimer
 from PySide6.QtGui import QColor, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog,
+    QApplication, QCheckBox, QProgressBar, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit,
     QAbstractItemView, QPushButton, QScrollArea, QStackedWidget, QTabWidget, QTableWidget,
     QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
@@ -130,14 +130,16 @@ def _row(form: QFormLayout, label: str, widget: QWidget, tip: str = "") -> None:
     form.addRow(caption, widget)
 
 
-def _wrap(*widgets) -> QWidget:
-    """Put widgets in a row, stretching the first one."""
+def _wrap(*widgets, stretch: bool = True) -> QWidget:
+    """Put widgets in a row, stretching the first one (or leaving them packed left when stretch is False)."""
     box = QWidget()
     row = QHBoxLayout(box)
     row.setContentsMargins(0, 0, 0, 0)
     row.setSpacing(6)
     for i, w in enumerate(widgets):
-        row.addWidget(w, 1 if i == 0 else 0)
+        row.addWidget(w, 1 if i == 0 and stretch else 0)
+    if not stretch:
+        row.addStretch(1)
     return box
 
 
@@ -544,6 +546,9 @@ class MainWindow(QMainWindow):
         self._partial = ""
         self._scan_proc = None
         self._scan = None
+        self._ed_proc = None
+        self._editions_source = None
+        self._pstate: dict = {}
         self._last_kind = ""
 
         self.setStyleSheet(STYLE)
@@ -655,6 +660,13 @@ class MainWindow(QMainWindow):
         self.info_text.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         il.addWidget(cap)
         il.addWidget(self.info_text, 1)
+        self.progress = QProgressBar()
+        self.progress.setTextVisible(False)
+        self.progress.setRange(0, 1000)
+        self.progress.setValue(0)
+        self.progress.setToolTip("Shows progress while WinForge reads, scans or builds.")
+        self.progress.setFixedHeight(3)
+        outer.addWidget(self.progress)
         outer.addWidget(info)
         return root
 
@@ -729,22 +741,23 @@ class MainWindow(QMainWindow):
         form.addRow(_section("Input"))
         self.source = QLineEdit()
         self.source.setPlaceholderText("Pick an ISO file or an extracted folder")
+        self.source.editingFinished.connect(self._source_edited)
         _row(form, "Windows ISO or folder", _wrap(
             self.source,
             _button("ISO…", self._pick_iso, tip="Choose a Windows ISO file downloaded from Microsoft"),
             _button("Folder…", self._pick_folder, tip="Choose a folder that already contains the Windows files"),
         ), "The ISO or folder with sources\\install.wim or install.esd inside.")
-        _row(form, "", _button("Read editions from this source", self.read_editions,
-                               tip="Lists the editions inside the image so you can pick one. Nothing is copied."))
         self.edition = QComboBox()
-        self.edition.setEditable(True)
         self.edition.setMinimumWidth(340)
+        self.edition.setPlaceholderText("Choose a source first")
         self.edition.setToolTip("The Windows edition to keep. Every other edition is removed from the output ISO.")
         self.edition.activated.connect(lambda _i: setattr(self, "_index", None))
-        _row(form, "Edition to keep", self.edition,
+        _row(form, "Edition to keep", _wrap(self.edition, _button(
+            "Reload list", self.read_editions, tip="Read the editions from the source again"), stretch=False),
              "Only this edition is kept in the output. Other editions are removed.")
-        self.edition_hint = _help("Choose a source above and click Read editions. "
-                                  "WinForge only reads the list of editions at this stage.")
+        self.edition_hint = _help("The list fills in when you choose a source. Only the list is read at this stage, "
+                                  "nothing is copied.")
+        self.edition_hint.setWordWrap(False)
         form.addRow(QLabel(""), self.edition_hint)
 
         form.addRow(_section("Output"))
@@ -773,7 +786,8 @@ class MainWindow(QMainWindow):
             "Compresses the image as much as possible. Off uses fast compression, which builds sooner but gives a larger ISO.")
         form.addRow(QLabel(""), self.reset_base)
         form.addRow(QLabel(""), self.compress)
-        form.addRow(QLabel(""), _help("Only the edition you chose is kept in the image, whatever these options are."))
+        lay.addWidget(_help("Only the edition you chose is kept in the image, whatever these options are."))
+        lay.addStretch()
         return page
 
     def _page_debloat(self) -> QWidget:
@@ -1114,7 +1128,7 @@ class MainWindow(QMainWindow):
         self._name = p["name"]
         self._description = p.get("description", "")
         self._index = p["index"]
-        self.edition.setCurrentText(p["edition"] or "")
+        self._set_edition(p["edition"] or "")
         self.reset_base.setChecked(p["options"]["reset_base"])
         self.compress.setChecked(p["options"]["compress"])
         self.oscdimg.setText(p["options"]["oscdimg"])
@@ -1190,7 +1204,7 @@ class MainWindow(QMainWindow):
             "schema": 1,
             "name": self._name or "custom",
             "description": self._description,
-            "edition": self.edition.currentText().strip(),
+            "edition": self.edition.currentText().strip() if self.edition.currentIndex() >= 0 else "",
             "index": self._index,
             "options": {
                 "reset_base": self.reset_base.isChecked(),
@@ -1307,11 +1321,13 @@ class MainWindow(QMainWindow):
         path, _ = _qt_open_file(self, "Choose a Windows ISO", "", "ISO image (*.iso)")
         if path:
             self.source.setText(path)
+            self.read_editions()
 
     def _pick_folder(self) -> None:
         path = _qt_dir(self, "Choose the extracted Windows folder")
         if path:
             self.source.setText(path)
+            self.read_editions()
 
     def _pick_dir(self, target: QLineEdit) -> None:
         path = _qt_dir(self, "Choose a folder")
@@ -1323,38 +1339,98 @@ class MainWindow(QMainWindow):
         if path:
             self.out.setText(path)
 
+    def _source_edited(self) -> None:
+        source = self.source.text().strip()
+        if source and source != getattr(self, "_editions_source", None) and Path(source).exists():
+            self.read_editions()
+
+    def _set_edition(self, name: str) -> None:
+        """Select an edition by name. A saved name that is not in the list yet stays visible until the list loads."""
+        pos = self.edition.findText(name)
+        if pos < 0:
+            self.edition.clear()
+            if name:
+                self.edition.addItem(name)
+        self.edition.setCurrentIndex(max(0, self.edition.findText(name)) if name else -1)
+
     def read_editions(self) -> None:
         source = self.source.text().strip()
         if not source:
             QMessageBox.information(self, "Choose a source", "Pick a Windows ISO or extracted folder first.")
             return
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        self.statusBar().showMessage("Reading editions…")
-        try:
-            result = subprocess.run(
-                [sys.executable, "-m", "winforge", "editions", source, "--json"],
-                cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=600,
-            )
-        except subprocess.TimeoutExpired:
-            QMessageBox.warning(self, "Timed out", "Reading the source took too long.")
+        if getattr(self, "_ed_proc", None) is not None:
             return
-        finally:
-            QApplication.restoreOverrideCursor()
-        if result.returncode != 0:
-            QMessageBox.warning(self, "Could not read the source", (result.stderr or result.stdout).strip())
+        self._editions_source = source
+        self._ed_out = ""
+        self.edition_hint.setText("Reading the editions…")
+        self._progress_busy("Reading the editions from the source…")
+        proc = QProcess(self)
+        proc.setWorkingDirectory(str(PROJECT_ROOT))
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
+        proc.readyReadStandardOutput.connect(
+            lambda: setattr(self, "_ed_out", self._ed_out + bytes(proc.readAllStandardOutput()).decode("utf-8", "replace")))
+        proc.finished.connect(self._editions_done)
+        self._ed_proc = proc
+        proc.start(sys.executable, ["-u", "-m", "winforge", "editions", source, "--json"])
+
+    def _editions_done(self, code: int, _status) -> None:
+        proc, self._ed_proc = self._ed_proc, None
+        err = bytes(proc.readAllStandardError()).decode("utf-8", "replace").strip()
+        proc.deleteLater()
+        self._progress_done()
+        if code != 0:
+            self._editions_source = None
+            self.edition_hint.setText("Could not read the source. Check the path and try Reload list.")
+            QMessageBox.warning(self, "Could not read the source", err or self._ed_out.strip() or "Unknown error.")
             return
-        editions = json.loads(result.stdout)
+        editions = json.loads(self._ed_out)
         current = self.edition.currentText()
+        self.edition.blockSignals(True)
         self.edition.clear()
         for e in editions:
             self.edition.addItem(e["name"])
+            self.edition.setItemData(self.edition.count() - 1, f"Image index {e['index']}", Qt.ItemDataRole.ToolTipRole)
         pos = self.edition.findText(current)
+        self.edition.setCurrentIndex(pos)
+        self.edition.blockSignals(False)
         if pos >= 0:
-            self.edition.setCurrentIndex(pos)
+            self.edition_hint.setText(f"{len(editions)} editions found. Only the selected one is kept.")
         else:
-            self.edition.setCurrentText(current)
-        self.edition_hint.setText(f"Found {len(editions)} editions. Pick the one to keep.")
+            self.edition_hint.setText(f"{len(editions)} editions found. Pick the one to keep.")
         self.statusBar().showMessage("Editions loaded")
+        self._refresh()
+
+    # ------------------------------------------------------------ progress
+
+    def _progress_busy(self, text: str) -> None:
+        """Indeterminate bar for work with no measurable progress."""
+        self._busy_jobs = getattr(self, "_busy_jobs", 0) + 1
+        self.progress.setRange(0, 0)
+        self.statusBar().showMessage(text)
+
+    def _progress_set(self, fraction: float, text: str = "") -> None:
+        self.progress.setRange(0, 1000)
+        self.progress.setValue(int(max(0.0, min(1.0, fraction)) * 1000))
+        if text:
+            self.statusBar().showMessage(text)
+
+    def _progress_done(self) -> None:
+        self._busy_jobs = max(0, getattr(self, "_busy_jobs", 1) - 1)
+        if self._busy_jobs == 0:
+            self.progress.setRange(0, 1000)
+            self.progress.setValue(0)
+
+    def _progress_line(self, line: str, stages: int, state: dict) -> None:
+        """Turn '== 3. Mount…' and DISM '[==== 42.0% ====]' lines into one smooth bar."""
+        m = re.match(r"== (\d+)\.", line)
+        if m:
+            state["stage"], state["pct"] = int(m.group(1)), 0.0
+            self._progress_set(state["stage"] / stages, line[3:])
+            return
+        m = re.search(r"(\d+(?:\.\d+)?)%", line)
+        if m and line.lstrip().startswith("["):
+            state["pct"] = float(m.group(1)) / 100
+            self._progress_set((state.get("stage", 0) + state["pct"]) / stages)
 
     # ------------------------------------------------- import and scan
 
@@ -1402,17 +1478,22 @@ class MainWindow(QMainWindow):
         self._scan_proc = proc
         self._scan_tail = ""
         self.scan_label.setText("Scanning…")
+        self._scan_state = {}
+        self._progress_busy("Scanning the image…")
         proc.start(sys.executable, args)
 
     def _scan_output(self) -> None:
         text = bytes(self._scan_proc.readAllStandardOutput()).decode("utf-8", "replace")
         lines = [ln for ln in text.splitlines() if ln.strip()]
+        for line in lines:
+            self._progress_line(line.strip(), 5, self._scan_state)
         if lines:
             self._scan_tail = lines[-1]
             self.scan_label.setText(self._scan_tail[:120])
 
     def _scan_done(self, code: int, _status) -> None:
         self._scan_proc = None
+        self._progress_done()
         if code != 0:
             self.scan_label.setText("Scan failed.")
             QMessageBox.warning(self, "Scan failed", self._scan_tail or "The scan stopped with an error. "
@@ -1697,7 +1778,9 @@ class MainWindow(QMainWindow):
     def _start(self, args: list[str], kind: str, title: str) -> None:
         self._last_kind = kind
         self._partial = ""
+        self._pstate = {}
         self.stage.setText("Starting…")
+        self._progress_busy("Starting…")
         self.log.appendPlainText(f"\n===== {title} =====")
         self._proc = QProcess(self)
         self._proc.setWorkingDirectory(str(PROJECT_ROOT))
@@ -1723,6 +1806,8 @@ class MainWindow(QMainWindow):
             line = line.rstrip("\r")
             if line.startswith("== "):
                 self.stage.setText(line[3:])
+            if self._last_kind == "build":
+                self._progress_line(line, 8, self._pstate)
             self.log.appendPlainText(line)
 
     def _on_finished(self, code: int, _status) -> None:
@@ -1735,6 +1820,11 @@ class MainWindow(QMainWindow):
         ok = code == 0
         self.log.appendPlainText(f"Finished with exit code {code}")
         self.stage.setText("Finished" if ok else "Stopped with an error")
+        if ok and self._last_kind == "build":
+            self._progress_set(1.0, "Build finished")
+            self._busy_jobs = 0
+        else:
+            self._progress_done()
         self._set_busy(False)
         if ok and self._last_kind == "build":
             self.btn_open.setEnabled(True)

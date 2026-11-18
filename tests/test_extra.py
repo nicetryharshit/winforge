@@ -214,3 +214,35 @@ class GuiExtraTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EditionPickerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from winforge import gui
+        cls.app = QApplication.instance() or QApplication([])
+        cls.window = gui.MainWindow()
+
+    def test_edition_is_a_fixed_list_and_saved_name_survives(self):
+        w = self.window
+        self.assertFalse(w.edition.isEditable())
+        p = default_profile()
+        p["edition"] = "Windows 11 Pro"
+        w.load_ui(normalise(p))
+        self.assertEqual(w.collect()["edition"], "Windows 11 Pro")
+        w._ed_out = '[{"index": 1, "name": "Windows 11 Home"}, {"index": 6, "name": "Windows 11 Pro"}]'
+        w._ed_proc = type("P", (), {"readAllStandardError": lambda s: b"", "deleteLater": lambda s: None})()
+        w._editions_done(0, None)
+        self.assertEqual([w.edition.itemText(i) for i in range(w.edition.count())],
+                         ["Windows 11 Home", "Windows 11 Pro"])
+        self.assertEqual(w.edition.currentText(), "Windows 11 Pro")
+
+    def test_progress_lines_drive_the_bar(self):
+        w = self.window
+        state = {}
+        w._progress_line("== 4. Customise", 8, state)
+        self.assertEqual(w.progress.value(), 500)
+        w._progress_line("[==== 50.0% ====]", 8, state)
+        self.assertEqual(w.progress.value(), int(4.5 / 8 * 1000))
