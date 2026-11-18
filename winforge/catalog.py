@@ -188,15 +188,17 @@ TWEAKS = (
               _e("DEFAULT", r"Software\Microsoft\Windows\CurrentVersion\Policies\System", "DisableChangePassword", "REG_DWORD", "1"),
               _e("DEFAULT", r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoLogoff", "REG_DWORD", "1"),
           )),
-    Tweak("kiosk_no_taskbar", "Hide taskbar and right-click menus, block Windows keys (new users)", "Kiosk",
-          "Stops users changing the taskbar, opening right-click menus and using Windows key shortcuts. "
-          "Applies to new accounts only.", False,
+    Tweak("kiosk_no_taskbar", "Hide the taskbar, block right-click menus and Windows keys", "Kiosk",
+          "Hides the taskbar, and stops users opening right-click menus or using Windows key shortcuts. "
+          "The taskbar part applies to every account, the rest to new accounts.", False,
           (
               _e("DEFAULT", r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoViewContextMenu", "REG_DWORD", "1"),
               _e("DEFAULT", r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoTrayContextMenu", "REG_DWORD", "1"),
               _e("DEFAULT", r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoSetTaskbar", "REG_DWORD", "1"),
               _e("DEFAULT", r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoTrayItemsDisplay", "REG_DWORD", "1"),
               _e("DEFAULT", r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoWinKeys", "REG_DWORD", "1"),
+              _e("DEFAULT", r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoTaskbar", "REG_DWORD", "1"),
+              _e("SOFTWARE", r"Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoTaskbar", "REG_DWORD", "1"),
           )),
     Tweak("builtin_admin_fix", "Fix Settings and Photos for the built-in Administrator", "Kiosk",
           "Lets Settings and Photos open when you sign in as the built-in Administrator. "
@@ -206,6 +208,33 @@ TWEAKS = (
               _e("SOFTWARE", r"Microsoft\Windows\CurrentVersion\Policies\System", "EnableLUA", "REG_DWORD", "1"),
               _e("SOFTWARE", r"Microsoft\Windows\CurrentVersion\Policies\System", "ConsentPromptBehaviorAdmin", "REG_DWORD", "0"),
               _e("SOFTWARE", r"Microsoft\Windows\CurrentVersion\Policies\System", "LocalAccountTokenFilterPolicy", "REG_DWORD", "1"),
+          )),
+    Tweak("task_manager_off", "Turn off Task Manager", "Kiosk",
+          "Blocks Task Manager for new accounts. Leave this off if you want Ctrl+Shift+Esc to work.", False,
+          (_e("DEFAULT", r"Software\Microsoft\Windows\CurrentVersion\Policies\System", "DisableTaskMgr", "REG_DWORD", "1"),)),
+    Tweak("edge_swipe_off", "Turn off edge swipe gestures (touch screens)", "Kiosk",
+          "Stops swipes from the screen edge opening panels. Touch itself keeps working.", False,
+          (_e("SOFTWARE", r"Microsoft\PolicyManager\default\LockDown\AllowEdgeSwipe", "value", "REG_DWORD", "0"),)),
+    Tweak("lockscreen_power_only", "Sign-in screen: hide Lock and Sign out, keep Power", "Kiosk",
+          "Removes Lock, Sign out, Change password and the user switcher, but keeps the Power button on the "
+          "sign-in screen and Start menu. Control Panel and Settings stay available.", False,
+          (
+              _e("SOFTWARE", r"Microsoft\Windows\CurrentVersion\Policies\System", "HideFastUserSwitching", "REG_DWORD", "1"),
+              _e("SOFTWARE", r"Microsoft\Windows\CurrentVersion\Policies\System", "shutdownwithoutlogon", "REG_DWORD", "1"),
+              _e("SOFTWARE", r"Microsoft\Windows\CurrentVersion\Policies\Explorer", "StartMenuLogOff", "REG_DWORD", "1"),
+              _e("SOFTWARE", r"Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoClose", "REG_DWORD", "0"),
+              _e("SOFTWARE", r"Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoControlPanel", "REG_DWORD", "0"),
+              _e("SOFTWARE", r"Microsoft\Windows\CurrentVersion\Explorer\FlyoutMenuSettings", "ShowLock", "REG_DWORD", "0"),
+              _e("SOFTWARE", r"Microsoft\Windows\CurrentVersion\Explorer\FlyoutMenuSettings", "ShowSignOut", "REG_DWORD", "0"),
+              _e("SOFTWARE", r"Microsoft\Windows\CurrentVersion\Explorer\FlyoutMenuSettings", "ShowPower", "REG_DWORD", "1"),
+              _e("DEFAULT", r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "StartMenuLogOff", "REG_DWORD", "1"),
+              _e("DEFAULT", r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoClose", "REG_DWORD", "0"),
+              _e("DEFAULT", r"Software\Microsoft\Windows\CurrentVersion\Explorer\FlyoutMenuSettings", "ShowLock", "REG_DWORD", "0"),
+              _e("DEFAULT", r"Software\Microsoft\Windows\CurrentVersion\Explorer\FlyoutMenuSettings", "ShowSignOut", "REG_DWORD", "0"),
+              _e("DEFAULT", r"Software\Microsoft\Windows\CurrentVersion\Explorer\FlyoutMenuSettings", "ShowPower", "REG_DWORD", "1"),
+              _e("DEFAULT", r"Software\Microsoft\Windows\CurrentVersion\Explorer\FlyoutMenuSettings", "ShowSleep", "REG_DWORD", "1"),
+              _e("DEFAULT", r"Software\Microsoft\Windows\CurrentVersion\Explorer\FlyoutMenuSettings", "ShowHibernate", "REG_DWORD", "1"),
+              _e("DEFAULT", r"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced", "Start_ShowUser", "REG_DWORD", "0"),
           )),
 )
 
@@ -218,7 +247,7 @@ BUILTIN_LABELS = {
 
 KIOSK_SERVICES = ("wuauserv", "UsoSvc", "edgeupdate", "edgeupdatem")
 KIOSK_TWEAKS = ("windows_update_policy", "driver_updates_off", "pause_updates_long", "eventlog_quiet",
-                "kiosk_lockdown", "kiosk_no_taskbar", "builtin_admin_fix")
+                "kiosk_lockdown", "kiosk_no_taskbar", "builtin_admin_fix", "lockscreen_power_only")
 
 
 def make_profile(name: str, description: str, *, apps=(), features=(), capabilities=(),

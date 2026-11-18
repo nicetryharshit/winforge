@@ -9,6 +9,7 @@ SCHEMA = 1
 HIVES = ("SOFTWARE", "SYSTEM", "DEFAULT")
 REG_TYPES = ("REG_SZ", "REG_DWORD", "REG_QWORD", "REG_EXPAND_SZ", "REG_MULTI_SZ", "REG_BINARY")
 PHASES = ("specialize", "setupcomplete", "firstlogon")
+APP_MODES = ("task", "run", "shell")
 
 NAME_TOKEN = re.compile(r"^[A-Za-z0-9_.~-]+$")
 HIVE_PREFIX = re.compile(r"^HK(LM|CU|EY_)", re.IGNORECASE)
@@ -31,11 +32,15 @@ def default_profile() -> dict:
         "updates": [],
         "registry": [],
         "reg_files": [],
+        "drivers_boot": [],
+        "installers": [],
+        "app": {"enabled": False, "name": "", "folder": "", "exe": "", "mode": "task",
+                "grant_write": True, "launch_now": False},
         "services_disable": [],
         "tasks_remove": [],
         "files": [],
         "scripts": {phase: [] for phase in PHASES},
-        "region": {"timezone": "", "locale": "en-US", "input": "0409:00000409"},
+        "region": {"timezone": "", "locale": "en-US", "input": "0409:00000409", "geo_id": None},
         "account": {
             "name": "User",
             "display_name": "",
@@ -113,6 +118,25 @@ def validate(p: dict) -> None:
         if not f.get("from") or not f.get("to"):
             raise ProfileError(f"file entry {i + 1}: both 'from' and 'to' are required")
 
+    for i, item in enumerate(p["drivers_boot"]):
+        if not isinstance(item, str) or not item.strip():
+            raise ProfileError(f"first-boot driver folder {i + 1} is empty")
+    for i, inst in enumerate(p["installers"]):
+        if not isinstance(inst, dict) or not str(inst.get("file", "")).strip():
+            raise ProfileError(f"first-boot installer {i + 1} needs a file")
+        inst["args"] = str(inst.get("args", ""))
+
+    app = p["app"]
+    if app["enabled"]:
+        if not NAME_TOKEN.match(str(app["name"])):
+            raise ProfileError("the app needs a short name (letters, digits, . _ - only) on the App page")
+        if not str(app["folder"]).strip():
+            raise ProfileError("choose the app's folder on the App page")
+        if not str(app["exe"]).strip():
+            raise ProfileError("choose the app's .exe on the App page")
+        if app["mode"] not in APP_MODES:
+            raise ProfileError(f"app mode must be one of {', '.join(APP_MODES)}")
+
     unknown = set(p["scripts"]) - set(PHASES)
     if unknown:
         raise ProfileError(f"unknown script section(s): {', '.join(sorted(unknown))}")
@@ -127,6 +151,9 @@ def validate(p: dict) -> None:
     for key in ("timezone", "locale", "input"):
         if not isinstance(region[key], str):
             raise ProfileError(f"region.{key} must be text")
+    geo = region["geo_id"]
+    if geo is not None and (isinstance(geo, bool) or not isinstance(geo, int) or geo < 1):
+        raise ProfileError("region.geo_id must be a positive number (for example 244 for the United States)")
 
 
 def load_profile(path: Path) -> dict:

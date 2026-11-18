@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -18,13 +19,15 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QProcess, Qt, QTimer
 from PySide6.QtGui import QColor, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog,
+    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit,
     QAbstractItemView, QPushButton, QScrollArea, QStackedWidget, QTabWidget, QTableWidget,
     QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from . import catalog, presets
+from .appsetup import describe_app
+from .ntlite import import_ntlite
 from .profile import PHASES, ProfileError, default_profile, load_profile, normalise, save_profile
 from .theme import ACCENT, DIM, MUTED, STYLE, apply_palette
 
@@ -34,7 +37,7 @@ DEFAULT_OUT = r"C:\WinForge\out\custom.iso"
 
 INFO_DEFAULT = "Hover over anything to see what it does."
 
-PAGES = ("Start", "Source", "Debloat", "Tweaks", "Scripts", "Account", "Build")
+PAGES = ("Start", "Source", "Debloat", "Tweaks", "Scripts", "App", "Account", "Build")
 
 PHASE_TITLES = {
     "specialize": ("Specialize",
@@ -240,18 +243,7 @@ class CheckList(QWidget):
         self.list.setColumnWidth(1, 250)
         self.list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         for it in items:
-            row = QTreeWidgetItem(["★" if it.recommended else "", it.label, it.note])
-            row.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
-            row.setCheckState(0, Qt.CheckState.Unchecked)
-            row.setData(0, Qt.ItemDataRole.UserRole, it.id)
-            if it.recommended:
-                row.setForeground(0, QColor(ACCENT))
-            row.setForeground(2, QColor(MUTED))
-            tip = f"{it.label}: {it.note or 'No extra notes.'}"
-            tip += f"\nGroup: {it.group}. Recommended: {'yes' if it.recommended else 'no'}. Internal name: {it.id}"
-            for col in range(3):
-                row.setToolTip(col, tip)
-            self.list.addTopLevelItem(row)
+            self._add_row(it)
         self.list.itemChanged.connect(lambda _item, _col: self._update_count())
         self.list.itemClicked.connect(self._clicked)
 
@@ -272,6 +264,34 @@ class CheckList(QWidget):
         layout.addLayout(bar)
         layout.addWidget(self.list, 1)
         self._update_count()
+
+    def _add_row(self, it) -> None:
+        row = QTreeWidgetItem(["★" if it.recommended else "", it.label, it.note])
+        row.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+        row.setCheckState(0, Qt.CheckState.Unchecked)
+        row.setData(0, Qt.ItemDataRole.UserRole, it.id)
+        if it.recommended:
+            row.setForeground(0, QColor(ACCENT))
+        row.setForeground(2, QColor(MUTED))
+        tip = f"{it.label}: {it.note or 'No extra notes.'}"
+        tip += f"\nGroup: {it.group}. Recommended: {'yes' if it.recommended else 'no'}. Internal name: {it.id}"
+        for col in range(3):
+            row.setToolTip(col, tip)
+        self.list.addTopLevelItem(row)
+
+    def add_items(self, items) -> int:
+        """Add items that are not in the list yet (used by Scan image). Returns how many were added."""
+        known = {it.id for it in self._items}
+        added = 0
+        for it in items:
+            if it.id not in known:
+                known.add(it.id)
+                self._items.append(it)
+                self._recommended[it.id] = it.recommended
+                self._add_row(it)
+                added += 1
+        self._update_count()
+        return added
 
     def _clicked(self, item, column) -> None:
         # Clicking the box toggles it already. Clicking anywhere else on the row toggles it too.
@@ -522,6 +542,8 @@ class MainWindow(QMainWindow):
         self._baseline: str | None = None
         self._proc: QProcess | None = None
         self._partial = ""
+        self._scan_proc = None
+        self._scan = None
         self._last_kind = ""
 
         self.setStyleSheet(STYLE)
@@ -529,7 +551,8 @@ class MainWindow(QMainWindow):
 
         self.stack = QStackedWidget()
         builders = (self._page_start, self._page_source, self._page_debloat,
-                    self._page_tweaks, self._page_scripts, self._page_account, self._page_build)
+                    self._page_tweaks, self._page_scripts, self._page_app, self._page_account,
+                    self._page_build)
         for build in builders:
             self.stack.addWidget(build())
         self.nav.currentRowChanged.connect(self._on_page_changed)
@@ -607,6 +630,7 @@ class MainWindow(QMainWindow):
                 "Debloat": "Apps, optional features and services to remove or switch off",
                 "Tweaks": "Registry changes, .reg files and custom registry entries",
                 "Scripts": "Commands and files that run during setup, and drivers",
+                "App": "Copy your own program to the new PC and choose how it starts",
                 "Account": "The first account, sign-in, time zone and language",
                 "Build": "Preview the plan or build the ISO",
             }[name])
@@ -686,6 +710,9 @@ class MainWindow(QMainWindow):
                               tip="Open a profile you saved earlier (a .json file)"))
         row.addWidget(_button("New blank profile", self.new_profile,
                               tip="Start from nothing. Every option stays at its default."))
+        row.addWidget(_button("Import NTLite preset…", self.import_ntlite,
+                              tip="Turn an NTLite preset (.xml) into a WinForge profile. Anything that can't be carried "
+                                  "over is listed afterwards."))
         row.addWidget(_button("Save current as preset…", self.save_as_preset,
                               tip="Save the settings you have now as a named preset you can reuse"))
         row.addStretch()
@@ -771,6 +798,18 @@ class MainWindow(QMainWindow):
         page, lay = _page("Debloat",
                           "Choose what to remove or switch off. ★ marks the choices that suit most machines. "
                           "Items missing from your edition are skipped, not treated as errors.", scroll=False)
+        bar = QHBoxLayout()
+        bar.setSpacing(6)
+        bar.addWidget(_button("Scan image…", self.scan_image,
+                              tip="Read the Windows image chosen on the Source page and list the apps, features, "
+                                  "services and scheduled tasks it really contains. Takes a few minutes. Needs Windows "
+                                  "and administrator rights."))
+        self.scan_label = QLabel("Not scanned yet. The lists show WinForge's built-in choices.")
+        self.scan_label.setObjectName("help")
+        bar.addWidget(self.scan_label, 1)
+        bar.addWidget(_button("Pick scheduled tasks…", self.pick_tasks,
+                              tip="Choose scheduled tasks from the last scan instead of typing their names."))
+        lay.addLayout(bar)
         lay.addWidget(tabs, 1)
         return page
 
@@ -876,10 +915,89 @@ class MainWindow(QMainWindow):
         dl.addWidget(_button("Add update package…", self._add_update,
                              tip="Choose a .msu or .cab update package to add"), 0)
         dl.addWidget(self.updates, 1)
+        dl.addWidget(_help("First-boot installs: drivers you can't add to the image, such as a graphics driver "
+                           "installer or a Wi-Fi driver folder. They are copied to C:\\Drivers and installed on the "
+                           "first start."))
+        self.drivers_boot = QPlainTextEdit()
+        self.drivers_boot.setToolTip("One driver folder per line. Installed on the new PC with pnputil.")
+        dl.addWidget(_button("Add first-boot driver folder…", self._add_driver_boot,
+                             tip="Choose a folder of .inf drivers to install on the first start"), 0)
+        dl.addWidget(self.drivers_boot, 1)
+        self.installers = QPlainTextEdit()
+        self.installers.setToolTip("One installer per line. Add silent switches after a | bar, for example nvidia.exe|/s /quiet")
+        dl.addWidget(_button("Add first-boot installer…", self._add_installer,
+                             tip="Choose an .exe or .msi to run silently on the first start"), 0)
+        dl.addWidget(self.installers, 1)
         tabs.addTab(drivers, "Drivers && updates")
 
         lay.addWidget(tabs, 1)
         return page
+
+    def _page_app(self) -> QWidget:
+        page, lay = _page("App",
+                          "Your own program, for example a kiosk app. WinForge copies its folder to the new PC and "
+                          "starts it for you. This replaces the hand-written copy, permission and scheduled-task steps.",
+                          scroll=True)
+        form = _form()
+        lay.addLayout(form)
+        self.app_on = QCheckBox("Install an app on the new PC")
+        self.app_on.setToolTip("Turn this on to copy a program into the image and have it start automatically.")
+        form.addRow(QLabel(""), self.app_on)
+        self.app_name = QLineEdit()
+        self.app_name.setPlaceholderText("for example AVReelsKiosk")
+        _row(form, "Folder name on the PC", self.app_name,
+             "The app lands in C:\\<this name>. Letters, digits, dot, underscore and dash only.")
+        self.app_folder = QLineEdit()
+        browse_folder = _button("Browse…", self._pick_app_folder, tip="Choose the folder that holds your app")
+        row = QHBoxLayout()
+        row.addWidget(self.app_folder, 1)
+        row.addWidget(browse_folder)
+        form.addRow(self._caption("App folder", "The folder on this computer with your app and everything it needs."), row)
+        self.app_exe = QLineEdit()
+        self.app_exe.setPlaceholderText("for example AVReelsKiosk.exe")
+        _row(form, "Program to start", self.app_exe,
+             "The .exe inside the app folder, relative to it. Choosing a folder fills this in when it finds one .exe.")
+        self.app_mode = QComboBox()
+        self.app_mode.addItem("Scheduled task at sign-in (runs elevated)", "task")
+        self.app_mode.addItem("Run entry at sign-in", "run")
+        self.app_mode.addItem("Replace the Windows desktop (shell)", "shell")
+        _row(form, "How it starts", self.app_mode,
+             "Scheduled task: starts at every sign-in with full rights. Run entry: simple start at sign-in. "
+             "Shell: your app becomes the desktop, so there is no taskbar or Start menu.")
+        self.app_grant = QCheckBox("Let every user write to the app folder")
+        self.app_grant.setToolTip("Gives Everyone full control of the folder so the app can save settings and logs.")
+        self.app_now = QCheckBox("Also start it as soon as setup finishes")
+        self.app_now.setToolTip("Launches the app at the end of first-boot setup, before anyone signs in again.")
+        form.addRow(QLabel(""), self.app_grant)
+        form.addRow(QLabel(""), self.app_now)
+        self.app_summary = _help("")
+        lay.addWidget(self.app_summary)
+        lay.addStretch()
+        self.app_mode.currentIndexChanged.connect(self._update_app_summary)
+        self.app_name.textChanged.connect(self._update_app_summary)
+        return page
+
+    @staticmethod
+    def _caption(text: str, tip: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("help")
+        label.setToolTip(tip)
+        return label
+
+    def _pick_app_folder(self) -> None:
+        path = _qt_dir(self, "Choose the app folder")
+        if not path:
+            return
+        self.app_folder.setText(self._store_path(path))
+        if not self.app_name.text().strip():
+            self.app_name.setText(re.sub(r"[^A-Za-z0-9._-]", "", os.path.basename(path)))
+        exes = [f for f in os.listdir(path) if f.lower().endswith(".exe")]
+        if len(exes) == 1 and not self.app_exe.text().strip():
+            self.app_exe.setText(exes[0])
+
+    def _update_app_summary(self) -> None:
+        mode = self.app_mode.currentData()
+        self.app_summary.setText(describe_app({"name": self.app_name.text().strip() or "<name>", "mode": mode}))
 
     def _page_account(self) -> QWidget:
         page, lay = _page("Account",
@@ -929,6 +1047,10 @@ class MainWindow(QMainWindow):
         self.input_locale.addItems(INPUT_LOCALES)
         _row(form, "Keyboard layout", self.input_locale,
              "Keyboard layout ID. 0409:00000409 is US English, 0809:00000809 is UK, 4009:00004009 is English (India).")
+        self.geo_id = QLineEdit()
+        self.geo_id.setPlaceholderText("blank = leave unchanged, 244 = United States, 113 = India")
+        _row(form, "Home location ID", self.geo_id,
+             "Windows GeoID for the home location. Applied on first sign-in. Blank leaves it unchanged.")
         form.addRow(QLabel(""), _help("The password is saved in the profile in plain text. Keep profile files private."))
         return page
 
@@ -1009,6 +1131,18 @@ class MainWindow(QMainWindow):
         self.timezone.setCurrentText(region["timezone"])
         self.locale.setCurrentText(region["locale"])
         self.input_locale.setCurrentText(region["input"])
+        self.geo_id.setText("" if region["geo_id"] is None else str(region["geo_id"]))
+        app = p["app"]
+        self.app_on.setChecked(app["enabled"])
+        self.app_name.setText(app["name"])
+        self.app_folder.setText(app["folder"])
+        self.app_exe.setText(app["exe"])
+        self.app_mode.setCurrentIndex(max(0, self.app_mode.findData(app["mode"])))
+        self.app_grant.setChecked(app["grant_write"])
+        self.app_now.setChecked(app["launch_now"])
+        self._update_app_summary()
+        _set_lines(self.drivers_boot, p["drivers_boot"])
+        _set_lines(self.installers, [i["file"] + ("|" + i["args"] if i["args"] else "") for i in p["installers"]])
 
         self.apps.set_checked(set(p["remove"]["appx"]))
         self.features.set_checked(set(p["remove"]["features"]) | set(p["remove"]["capabilities"]))
@@ -1080,7 +1214,20 @@ class MainWindow(QMainWindow):
                 "timezone": self.timezone.currentText().strip(),
                 "locale": self.locale.currentText().strip() or "en-US",
                 "input": self.input_locale.currentText().strip() or "0409:00000409",
+                "geo_id": self._geo(),
             },
+            "app": {
+                "enabled": self.app_on.isChecked(),
+                "name": self.app_name.text().strip(),
+                "folder": self.app_folder.text().strip(),
+                "exe": self.app_exe.text().strip(),
+                "mode": self.app_mode.currentData(),
+                "grant_write": self.app_grant.isChecked(),
+                "launch_now": self.app_now.isChecked(),
+            },
+            "drivers_boot": _lines(self.drivers_boot),
+            "installers": [{"file": a.strip(), "args": b.strip()} for a, _, b in
+                           (line.partition("|") for line in _lines(self.installers))],
             "account": {
                 "name": self.acct_name.text().strip(),
                 "display_name": self.acct_display.text().strip(),
@@ -1091,6 +1238,15 @@ class MainWindow(QMainWindow):
             },
         }
         return normalise(raw)
+
+    def _geo(self):
+        text = self.geo_id.text().strip()
+        if not text:
+            return None
+        try:
+            return int(text)
+        except ValueError:
+            return -1
 
     @staticmethod
     def _snapshot(p: dict) -> str:
@@ -1200,6 +1356,109 @@ class MainWindow(QMainWindow):
         self.edition_hint.setText(f"Found {len(editions)} editions. Pick the one to keep.")
         self.statusBar().showMessage("Editions loaded")
 
+    # ------------------------------------------------- import and scan
+
+    def import_ntlite(self) -> None:
+        path, _ = _qt_open_file(self, "Choose an NTLite preset", "", "NTLite presets (*.xml)")
+        if not path:
+            return
+        try:
+            profile, notes = import_ntlite(path)
+        except (ValueError, ProfileError) as exc:
+            QMessageBox.warning(self, "Could not import", str(exc))
+            return
+        self._path = None
+        self.load_ui(profile)
+        self._baseline = None
+        self._update_profile_label()
+        self._refresh()
+        self.go("Account")
+        text = "Imported. Check the Account and Tweaks pages."
+        if notes:
+            text += "\n\nNot carried over:\n- " + "\n- ".join(notes)
+        QMessageBox.information(self, "NTLite preset imported", text)
+
+    def _scan_file(self) -> Path:
+        return Path(os.environ.get("APPDATA", str(Path.home()))) / "WinForge" / "scan.json"
+
+    def scan_image(self) -> None:
+        source = self.source.text().strip()
+        if not source:
+            QMessageBox.information(self, "Choose a source", "Pick a Windows ISO or folder on the Source page first.")
+            return
+        if self._proc is not None or getattr(self, "_scan_proc", None) is not None:
+            QMessageBox.information(self, "Busy", "Wait for the current job to finish.")
+            return
+        args = ["-u", "-m", "winforge", "scan", "--source", source, "--work", self.work.text().strip() or DEFAULT_WORK,
+                "--out", str(self._scan_file())]
+        edition = self.edition.currentText().strip()
+        if edition:
+            args += ["--edition", edition]
+        proc = QProcess(self)
+        proc.setWorkingDirectory(str(PROJECT_ROOT))
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        proc.readyReadStandardOutput.connect(self._scan_output)
+        proc.finished.connect(self._scan_done)
+        self._scan_proc = proc
+        self._scan_tail = ""
+        self.scan_label.setText("Scanning…")
+        proc.start(sys.executable, args)
+
+    def _scan_output(self) -> None:
+        text = bytes(self._scan_proc.readAllStandardOutput()).decode("utf-8", "replace")
+        lines = [ln for ln in text.splitlines() if ln.strip()]
+        if lines:
+            self._scan_tail = lines[-1]
+            self.scan_label.setText(self._scan_tail[:120])
+
+    def _scan_done(self, code: int, _status) -> None:
+        self._scan_proc = None
+        if code != 0:
+            self.scan_label.setText("Scan failed.")
+            QMessageBox.warning(self, "Scan failed", self._scan_tail or "The scan stopped with an error. "
+                                "Run WinForge as administrator and try again.")
+            return
+        self.apply_scan(json.loads(self._scan_file().read_text(encoding="utf-8")))
+
+    def apply_scan(self, data: dict) -> None:
+        self._scan = data
+        group = "In your image"
+        apps = self.apps.add_items(catalog.Item(a["name"], a["name"], group, "Found in your image.") for a in data["apps"])
+        feats = self.features.add_items(
+            catalog.Item(f["name"], f["name"], group, "Found in your image.")
+            for f in data["features"] + data["capabilities"])
+        svcs = self.services.add_items(
+            catalog.Item(s["name"], s["name"], group, f"Found in your image. Start type {s['start']}.")
+            for s in data["services"] if s["start"] != 4)
+        self.scan_label.setText(
+            f"Scanned: {len(data['apps'])} apps, {len(data['features']) + len(data['capabilities'])} features, "
+            f"{len(data['services'])} services, {len(data['tasks'])} scheduled tasks. "
+            f"Added {apps + feats + svcs} new items to the lists.")
+
+    def pick_tasks(self) -> None:
+        data = getattr(self, "_scan", None)
+        if data is None and self._scan_file().exists():
+            data = self._scan = json.loads(self._scan_file().read_text(encoding="utf-8"))
+        if not data or not data.get("tasks"):
+            QMessageBox.information(self, "No scan yet", "Run Scan image first. It lists the real scheduled tasks.")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Scheduled tasks in your image")
+        dialog.resize(720, 520)
+        lay = QVBoxLayout(dialog)
+        picker = CheckList([catalog.Item(t, t.rsplit("\\", 1)[-1], t.rsplit("\\", 1)[0] if "\\" in t else "",
+                                         t.rsplit("\\", 1)[0] if "\\" in t else "") for t in data["tasks"]])
+        lay.addWidget(picker, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        lay.addWidget(buttons)
+        if dialog.exec():
+            have = set(_lines(self.tasks_remove))
+            for t in picker.checked():
+                if t not in have:
+                    self.tasks_remove.appendPlainText(t)
+
     # --------------------------------------------------------------- scripts
 
     def _insert_snippet(self, editor: QPlainTextEdit, combo: QComboBox, index: int) -> None:
@@ -1212,6 +1471,16 @@ class MainWindow(QMainWindow):
         path = _qt_dir(self, "Choose a driver folder")
         if path:
             self.drivers.appendPlainText(self._store_path(path))
+
+    def _add_driver_boot(self) -> None:
+        path = _qt_dir(self, "Choose a driver folder")
+        if path:
+            self.drivers_boot.appendPlainText(self._store_path(path))
+
+    def _add_installer(self) -> None:
+        path, _ = _qt_open_file(self, "Choose an installer", "", "Installers (*.exe *.msi)")
+        if path:
+            self.installers.appendPlainText(self._store_path(path) + "|/s /quiet")
 
     def _add_update(self) -> None:
         path, _ = _qt_open_file(self, "Choose an update", "", "Update packages (*.msu *.cab)")

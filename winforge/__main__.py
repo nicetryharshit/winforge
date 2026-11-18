@@ -12,7 +12,10 @@ from pathlib import Path
 
 from . import presets
 from .editions import read_editions
+from .ntlite import import_ntlite
 from .pipeline import BuildError, build, cleanup
+from .profile import save_profile
+from .scan import scan_image
 from .profile import ProfileError, load_profile
 
 
@@ -75,6 +78,21 @@ def cmd_cleanup(args) -> int:
     return 0
 
 
+def cmd_import_ntlite(args) -> int:
+    profile, notes = import_ntlite(args.preset, name=args.name)
+    out = args.out or Path(args.preset).with_suffix(".winforge.json")
+    save_profile(profile, out)
+    print(f"Saved {out}")
+    for n in notes:
+        print(f"  note: {n}")
+    return 0
+
+
+def cmd_scan(args) -> int:
+    scan_image(args.source, args.work, args.out, edition=args.edition or "", index=args.index or 0, log=_log)
+    return 0
+
+
 def cmd_gui(args) -> int:
     from .gui import run
     return run()
@@ -118,6 +136,20 @@ def build_parser() -> argparse.ArgumentParser:
     c = sub.add_parser("cleanup", help="unmount a build left behind by a cancelled or crashed run")
     c.add_argument("--work", type=Path, default=Path(r"C:\WinForge\work"))
     c.set_defaults(func=cmd_cleanup)
+
+    n = sub.add_parser("import-ntlite", help="turn an NTLite preset (.xml) into a WinForge profile")
+    n.add_argument("preset", type=Path)
+    n.add_argument("--name")
+    n.add_argument("--out", type=Path)
+    n.set_defaults(func=cmd_import_ntlite)
+
+    s = sub.add_parser("scan", help="list the real apps, features, services and tasks in a Windows image")
+    s.add_argument("--source", type=Path, required=True)
+    s.add_argument("--work", type=Path, required=True)
+    s.add_argument("--out", type=Path, required=True)
+    s.add_argument("--edition")
+    s.add_argument("--index", type=int)
+    s.set_defaults(func=cmd_scan)
 
     g = sub.add_parser("gui", help="open the editor window")
     g.set_defaults(func=cmd_gui)

@@ -17,6 +17,7 @@ import subprocess
 from pathlib import Path
 from typing import Callable
 
+from .appsetup import apply_extras
 from .editions import find_edition, parse_wim_info
 from .profile import save_profile
 from .regfile import load_reg_files
@@ -320,7 +321,7 @@ def _steps(profile: dict, base: Path, source: Path, work: Path, out: Path,
         out.parent.mkdir(parents=True, exist_ok=True)
         if out.exists():
             out.unlink()
-        save_profile(profile, out.with_suffix(".profile.json"))
+        save_profile(profile.get("_original", profile), out.with_suffix(".profile.json"))
     etfs = src / "boot" / "etfsboot.com"
     efisys = src / "efi" / "microsoft" / "boot" / "efisys.bin"
     R.run([oscdimg, "-m", "-o", "-u2", "-udfver102",
@@ -331,6 +332,7 @@ def build(profile: dict, base, source, work, out, oscdimg: str | None = None,
           dry_run: bool = False, log: Callable[[str], None] = print) -> None:
     """Build an ISO from a normalised profile. `base` is the folder that relative paths start from."""
     base, source, work, out = Path(base), Path(source), Path(work), Path(out)
+    profile = apply_extras(profile)
     oscdimg = oscdimg or profile["options"]["oscdimg"] or OSCDIMG_DEFAULT
 
     errors, warnings = preflight(profile, base, source, work, out, oscdimg, dry_run)

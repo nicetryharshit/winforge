@@ -126,3 +126,12 @@ py -m unittest discover -s tests
 The tests run on any OS. They check the profile rules, the generated unattend XML, edition parsing against
 real DISM output, presets, the dry-run plan, and the CLI exit codes. They don't exercise DISM itself, so a
 real build still needs to be tested on Windows.
+
+
+## App, drivers, import and scan
+
+- **App page**: pick your program's folder and .exe. WinForge copies it to `C:\<name>`, can give Everyone write access, and starts it with a sign-in scheduled task (default), a Run entry, or by replacing the Windows shell. It can also launch it as soon as setup finishes.
+- **First-boot drivers and installers** (Scripts > Drivers & updates): driver folders are installed with `pnputil`, installers run silently, both from `C:\Drivers`.
+- **Home location**: Account > Home location ID (for example 244 for the United States), applied at first sign-in with `Set-WinHomeLocation`.
+- **Import NTLite preset**: `python -m winforge import-ntlite preset.xml` or Start > Import NTLite preset. Account, sign-in, time zone, first-boot commands, service switches, known update tweaks and `.reg` files are carried over. Everything else is listed as a note.
+- **Scan image**: `python -m winforge scan --source win11.iso --work C:\WinForge\work --out scan.json`, or Debloat > Scan image. Lists the real apps, features, capabilities, services and scheduled tasks. Needs Windows and administrator rights. The parsers are unit-tested, but the scan itself has not been run on a real image yet.
