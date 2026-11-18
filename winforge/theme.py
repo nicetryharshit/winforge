@@ -6,15 +6,15 @@ the primary action. Pure styling. No behaviour lives here.
 from PySide6.QtGui import QColor, QPalette
 
 # Palette
-BG = "#1c1c1c"          # window and chrome
-PANEL = "#242424"       # page and panel background
-PANEL_2 = "#2d2d2d"     # inputs, buttons
-SUNKEN = "#161616"      # log and list wells
-LINE = "#383838"        # hairline separators
-LINE_STRONG = "#4a4a4a"
-TEXT = "#dcdcdc"
-MUTED = "#8a8a8a"
-DIM = "#5e5e5e"
+BG = "#181818"          # window and chrome (a step darker than before)
+PANEL = "#1f1f1f"       # page and panel background
+PANEL_2 = "#282828"     # inputs, buttons
+SUNKEN = "#121212"      # log and list wells
+LINE = "#2f2f2f"        # hairline separators
+LINE_STRONG = "#414141"
+TEXT = "#d4d4d4"
+MUTED = "#7f7f7f"
+DIM = "#555555"
 ACCENT = "#ffb13b"      # amber: selection, focus, primary action
 ACCENT_HOVER = "#ffc566"
 ACCENT_TEXT = "#1c1c1c"
@@ -24,7 +24,7 @@ WARN = "#ff7a6b"
 STYLE = f"""
 * {{
     font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-    font-size: 9pt;
+    font-size: 8.5pt;
     color: {TEXT};
 }}
 QWidget {{ background: transparent; }}
@@ -57,9 +57,9 @@ QLabel#stage {{ color: {ACCENT}; font-weight: 600; }}
 
 /* Browser (left nav) */
 QListWidget#nav {{ background: {SUNKEN}; border: none; border-right: 1px solid {LINE}; outline: none; padding: 6px 0; }}
-QListWidget#nav::item {{ padding: 9px 14px; color: {MUTED}; border-left: 2px solid transparent; }}
+QListWidget#nav::item {{ padding: 7px 14px; color: {MUTED}; border-left: 3px solid transparent; }}
 QListWidget#nav::item:hover:!selected {{ color: {TEXT}; background: {PANEL_2}; }}
-QListWidget#nav::item:selected {{ color: {ACCENT}; background: {PANEL}; border-left: 2px solid {ACCENT}; font-weight: 600; }}
+QListWidget#nav::item:selected {{ color: {TEXT}; background: {PANEL_2}; border-left: 3px solid {ACCENT}; font-weight: 600; }}
 
 /* Inputs */
 QLineEdit, QComboBox, QPlainTextEdit, QSpinBox {{
@@ -75,11 +75,14 @@ QComboBox QAbstractItemView {{
 }}
 
 /* Lists and tables */
-QListWidget#well, QTableWidget {{
+QListWidget#well, QTreeWidget#well, QTableWidget {{
     background: {SUNKEN}; border: 1px solid {LINE}; border-radius: 2px; outline: none;
     selection-background-color: {ACCENT}; selection-color: {ACCENT_TEXT}; gridline-color: {LINE};
 }}
-QListWidget#well::item {{ padding: 4px 6px; }}
+QListWidget#well::item {{ padding: 3px 6px; }}
+QTreeWidget#well::item {{ padding: 4px 4px; border-bottom: 1px solid {PANEL}; }}
+QTreeWidget#well::item:hover {{ background: {PANEL_2}; }}
+QTreeWidget#well::item:selected {{ background: {PANEL_2}; color: {TEXT}; }}
 QListWidget#well::item:hover {{ background: {PANEL_2}; }}
 QHeaderView::section {{
     background: {PANEL_2}; color: {MUTED}; border: none; border-bottom: 1px solid {LINE};
@@ -103,6 +106,13 @@ QPushButton#ghost {{ background: transparent; border: none; color: {MUTED}; padd
 QPushButton#ghost:hover {{ color: {TEXT}; background: {PANEL_2}; }}
 QPushButton#chip {{ border-radius: 2px; padding: 3px 9px; font-size: 8pt; color: {MUTED}; }}
 
+/* Checkboxes, including the ones inside lists */
+QTreeView::indicator, QListView::indicator {{
+    width: 13px; height: 13px; border: 1px solid {LINE_STRONG}; background: {SUNKEN}; border-radius: 2px;
+}}
+QTreeView::indicator:hover, QListView::indicator:hover {{ border-color: {ACCENT}; }}
+QTreeView::indicator:checked, QListView::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; }}
+
 /* Checkboxes */
 QCheckBox {{ spacing: 8px; }}
 QCheckBox::indicator {{ width: 13px; height: 13px; border: 1px solid {LINE_STRONG}; background: {SUNKEN}; border-radius: 2px; }}
@@ -111,7 +121,7 @@ QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; }}
 
 /* Tabs */
 QTabWidget::pane {{ border: none; border-top: 1px solid {LINE}; background: {PANEL}; top: -1px; }}
-QTabBar::tab {{ padding: 8px 14px; background: transparent; color: {MUTED}; border: none; border-bottom: 2px solid transparent; }}
+QTabBar::tab {{ padding: 6px 12px; background: transparent; color: {MUTED}; border: none; border-bottom: 2px solid transparent; font-size: 8pt; }}
 QTabBar::tab:selected {{ color: {ACCENT}; border-bottom: 2px solid {ACCENT}; font-weight: 600; }}
 QTabBar::tab:hover:!selected {{ color: {TEXT}; }}
 
@@ -128,6 +138,16 @@ QPlainTextEdit#log {{
     font-family: "Cascadia Mono", Consolas, monospace; font-size: 8.5pt;
 }}
 
+/* Panel header strip */
+QLabel#panelHead {{
+    background: {BG}; color: {MUTED}; border: 1px solid {LINE}; border-radius: 2px; padding: 8px 12px;
+}}
+
+/* Info view (bottom strip) */
+QFrame#info {{ background: {BG}; border-top: 1px solid {LINE}; }}
+QLabel#infoCap {{ color: {DIM}; font-size: 7pt; font-weight: 700; }}
+QLabel#infoText {{ color: {MUTED}; }}
+
 /* Status bar and scrollbars */
 QStatusBar {{ background: {BG}; color: {MUTED}; border-top: 1px solid {LINE}; }}
 QStatusBar QLabel {{ color: {MUTED}; }}
@@ -142,6 +162,19 @@ QScrollBar:horizontal {{ height: 0; }}
 QSplitter::handle {{ background: {LINE}; }}
 QToolTip {{ background: {PANEL_2}; color: {TEXT}; border: 1px solid {LINE_STRONG}; padding: 5px 7px; }}
 QMessageBox {{ background: {PANEL}; }}
+QMessageBox QLabel {{ color: {TEXT}; }}
+QFileDialog QTreeView, QFileDialog QListView {{
+    background: {SUNKEN}; border: 1px solid {LINE}; selection-background-color: {ACCENT};
+    selection-color: {ACCENT_TEXT};
+}}
+
+/* Window controls on the top bar (the window has no Windows title bar) */
+QPushButton#winctl, QPushButton#winclose {{
+    background: transparent; border: none; border-radius: 0; padding: 0;
+    min-width: 46px; min-height: 30px; color: {MUTED}; font-size: 10pt; font-weight: 400;
+}}
+QPushButton#winctl:hover {{ background: {PANEL_2}; color: {TEXT}; }}
+QPushButton#winclose:hover {{ background: #c42b1c; color: #ffffff; }}
 """
 
 

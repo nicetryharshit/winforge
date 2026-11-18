@@ -31,12 +31,12 @@ The pages go from left to right:
 - **Start:** pick a preset (Lean, Everything, Blank, or one you saved), or open a profile file.
 - **Source:** pick your Windows ISO or extracted folder, click **Read editions**, then choose one.
 - **Debloat:** tick apps, features and services to remove or switch off. ★ marks the recommended ones.
-- **Tweaks:** tick registry tweaks. Custom entries go in the table below them.
-- **Scripts & files:** commands for setup, first logon, files to copy, drivers, and updates.
-- **Account:** the local account, autologon, and whether to skip the setup screens.
+- **Tweaks:** tick registry tweaks, add custom registry entries, or import `.reg` files.
+- **Scripts:** commands for each setup phase, files and folders to copy into the image (drag and drop from Explorer), drivers, and updates. `SetupComplete.cmd` is written for you.
+- **Account:** the local account (including the built-in Administrator), autologon, setup screens, time zone, language and keyboard.
 - **Build:** a summary, a **Preview (dry run)** button, and **Build ISO**. The log and stage show what is happening.
 
-Ctrl+S saves. The Build page refuses to run while the profile has an error and says which one.
+Hover over any control and its description appears in the Info strip at the bottom. Ctrl+S saves. The Build page refuses to run while the profile has an error and says which one.
 
 ## Command line
 
@@ -61,6 +61,7 @@ next to the ISO (for example `test.iso` gets `test.profile.json`), so you can se
 ## Presets
 
 - **Lean (recommended):** removes the bundled apps, telemetry and sponsored content, and disables the telemetry services. Keeps the Store, Defender and Windows Update.
+- **Kiosk:** the setup from the NTLite kiosk presets: stops Windows Update, locks the desktop, signs in to the built-in Administrator. Check the time zone on the Account page before building.
 - **Everything (aggressive):** everything in the catalog. Expect some breakage, so test it in a VM first.
 - **Blank:** no changes.
 
@@ -78,6 +79,7 @@ A profile is a JSON file. See `profiles/example.json`.
 | `options` | `reset_base`, `compress` (re-export the image), `oscdimg` path |
 | `remove` | `appx` (display names), `features`, `capabilities` |
 | `drivers`, `updates` | Driver folders to inject, `.msu` or `.cab` packages to add |
+| `reg_files` | `.reg` files (Regedit exports) applied to the image. Only `HKLM\SOFTWARE`, `HKLM\SYSTEM` and `HKCU` keys are used. Deletions are skipped with a warning. |
 | `registry` | Offline edits in the `SOFTWARE`, `SYSTEM` or `DEFAULT` (Default user) hive. Key is relative to the hive. An empty `name` sets the default value. |
 | `services_disable` | Sets `Start = 4` on each service |
 | `tasks_remove` | Deletes scheduled task files |
@@ -85,7 +87,18 @@ A profile is a JSON file. See `profiles/example.json`.
 | `scripts.specialize` | Runs as SYSTEM after install, before the setup screens |
 | `scripts.setupcomplete` | Written to `SetupComplete.cmd`. Runs as SYSTEM before first logon |
 | `scripts.firstlogon` | Runs in order at first logon as the new account |
-| `account` | Local account name and password, autologon, skip setup screens |
+| `region` | `timezone` (Windows ID, blank keeps the default), `locale` (e.g. `en-US`), `input` (keyboard ID) |
+| `account` | Account name, display name and password, autologon, skip setup screens, `enable_builtin_admin` |
+
+## Where old `$OEM$` folders go
+
+| Old path | In WinForge |
+|---|---|
+| `sources\$OEM$\$1\...` (appears in `C:\`) | Scripts > Files, with a destination that starts at `C:\`, e.g. `AVReelsClassic` or `Drivers` |
+| `sources\$OEM$\$$\Setup\Scripts\SetupComplete.cmd` | Scripts > SetupComplete tab. It is written for you |
+| Other scripts such as `Config.ps1` | Files, destination `Windows\Setup\Scripts`, then call them from a SetupComplete line |
+
+The style rules for the editor are in `docs/STYLE.md`.
 
 ## Safety
 

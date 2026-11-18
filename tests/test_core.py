@@ -445,6 +445,20 @@ class GuiSmokeTests(unittest.TestCase):
         as_text = lambda rows: sorted(json.dumps(r, sort_keys=True) for r in rows)  # noqa: E731
         self.assertEqual(as_text(out["registry"]), as_text(kiosk["registry"]))
 
+    def test_files_tree_round_trips(self):
+        files = [{"from": "tools\\a.ps1", "to": "Windows\\Setup\\Scripts\\a.ps1"},
+                 {"from": "b.txt", "to": "b.txt"}]
+        self.window.files_tree.set_entries(files)
+        key = lambda f: f["to"]  # noqa: E731
+        self.assertEqual(sorted(self.window.files_tree.entries(), key=key), sorted(files, key=key))
+
+    def test_destination_folders_are_checked(self):
+        from winforge.gui import _clean_folder
+        self.assertEqual(_clean_folder("/Windows/Setup/Scripts/"), "Windows\\Setup\\Scripts")
+        self.assertEqual(_clean_folder(""), "")
+        self.assertIsNone(_clean_folder("C:\\Windows"))
+        self.assertIsNone(_clean_folder("..\\Windows"))
+
     def test_default_profile_collects_without_error(self):
         self.window.load_ui(default_profile())
         self.window.collect()

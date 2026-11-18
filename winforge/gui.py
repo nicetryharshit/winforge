@@ -15,22 +15,24 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, Qt, QTimer
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtCore import QEvent, QProcess, Qt, QTimer
+from PySide6.QtGui import QColor, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit,
-    QPushButton, QScrollArea, QStackedWidget, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout,
-    QWidget,
+    QAbstractItemView, QPushButton, QScrollArea, QStackedWidget, QTabWidget, QTableWidget,
+    QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from . import catalog, presets
 from .profile import PHASES, ProfileError, default_profile, load_profile, normalise, save_profile
-from .theme import STYLE, apply_palette
+from .theme import ACCENT, DIM, MUTED, STYLE, apply_palette
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_WORK = r"C:\WinForge\work"
 DEFAULT_OUT = r"C:\WinForge\out\custom.iso"
+
+INFO_DEFAULT = "Hover over anything to see what it does."
 
 PAGES = ("Start", "Source", "Debloat", "Tweaks", "Scripts", "Account", "Build")
 
@@ -40,7 +42,8 @@ PHASE_TITLES = {
                    "Use it for early system changes. One command per line."),
     "setupcomplete": ("SetupComplete",
                       "Runs as SYSTEM once Windows setup finishes, before anyone signs in. Good for installing "
-                      "drivers, removing services and changing system-wide settings."),
+                      "drivers, removing services and changing system-wide settings. WinForge writes this file "
+                      "to Windows\\Setup\\Scripts\\SetupComplete.cmd inside the image, so you don't place it yourself."),
     "firstlogon": ("First logon",
                    "Runs once, as the new account, the first time it signs in. Good for per-user settings "
                    "and winget installs."),
@@ -102,6 +105,15 @@ def _section(text: str) -> QLabel:
 def _help(text: str) -> QLabel:
     label = QLabel(text)
     label.setObjectName("help")
+    label.setWordWrap(True)
+    label.setContentsMargins(0, 8, 0, 6)
+    return label
+
+
+def _panel_head(text: str) -> QLabel:
+    """A header strip at the top of a panel: says what the panel is for."""
+    label = QLabel(text)
+    label.setObjectName("panelHead")
     label.setWordWrap(True)
     return label
 
@@ -175,6 +187,26 @@ def _form() -> QFormLayout:
     return form
 
 
+_NONATIVE = QFileDialog.Option.DontUseNativeDialog
+
+
+def _qt_open_file(parent, title, directory="", flt=""):
+    """Qt's own file dialog, so it matches the rest of the app (no Windows-style dialogs)."""
+    return QFileDialog.getOpenFileName(parent, title, directory, flt, options=_NONATIVE)
+
+
+def _qt_open_files(parent, title, directory="", flt=""):
+    return QFileDialog.getOpenFileNames(parent, title, directory, flt, options=_NONATIVE)
+
+
+def _qt_save_file(parent, title, directory="", flt=""):
+    return QFileDialog.getSaveFileName(parent, title, directory, flt, options=_NONATIVE)
+
+
+def _qt_dir(parent, title, directory=""):
+    return QFileDialog.getExistingDirectory(parent, title, directory, options=_NONATIVE)
+
+
 def _entry_key(r: dict) -> tuple:
     return (r["hive"], r["key"], r["name"], r["type"], str(r["data"]))
 
@@ -182,7 +214,7 @@ def _entry_key(r: dict) -> tuple:
 # ------------------------------------------------------------------- widgets
 
 class CheckList(QWidget):
-    """A searchable list of options. Each row shows the name and a plain-English note, and a tooltip with details."""
+    """A searchable checklist. Name is bright, the plain-English description is dim, and ★ marks recommended items."""
 
     def __init__(self, items):
         super().__init__()
@@ -191,30 +223,37 @@ class CheckList(QWidget):
 
         self.search = QLineEdit()
         self.search.setPlaceholderText("Filter by name or description…")
-        self.search.setToolTip("Type to filter the list. Matches the name, the note and the group.")
+        self.search.setToolTip("Type to filter the list. Matches the name, the description and the group.")
         self.search.textChanged.connect(self._filter)
 
         self.count = QLabel()
         self.count.setObjectName("help")
         self.count.setToolTip("How many items are ticked. Ticked items are applied to the image.")
 
-        self.list = QListWidget()
+        self.list = QTreeWidget()
         self.list.setObjectName("well")
-        self.list.setAlternatingRowColors(False)
+        self.list.setRootIsDecorated(False)
+        self.list.setUniformRowHeights(True)
+        self.list.setColumnCount(3)
+        self.list.setHeaderLabels(["", "Name", "What it does"])
+        self.list.setColumnWidth(0, 54)
+        self.list.setColumnWidth(1, 250)
+        self.list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         for it in items:
-            text = ("★  " if it.recommended else "     ") + it.label
-            if it.note:
-                text += "   —   " + it.note
-            li = QListWidgetItem(text)
-            li.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
-            li.setCheckState(Qt.CheckState.Unchecked)
-            li.setData(Qt.ItemDataRole.UserRole, it.id)
-            tip = f"{it.label}\n\n{it.note or 'No extra notes.'}\n\nGroup: {it.group}"
-            tip += "\nRecommended: yes" if it.recommended else "\nRecommended: no"
-            tip += f"\nInternal name: {it.id}"
-            li.setToolTip(tip)
-            self.list.addItem(li)
-        self.list.itemChanged.connect(lambda _item: self._update_count())
+            row = QTreeWidgetItem(["★" if it.recommended else "", it.label, it.note])
+            row.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+            row.setCheckState(0, Qt.CheckState.Unchecked)
+            row.setData(0, Qt.ItemDataRole.UserRole, it.id)
+            if it.recommended:
+                row.setForeground(0, QColor(ACCENT))
+            row.setForeground(2, QColor(MUTED))
+            tip = f"{it.label}: {it.note or 'No extra notes.'}"
+            tip += f"\nGroup: {it.group}. Recommended: {'yes' if it.recommended else 'no'}. Internal name: {it.id}"
+            for col in range(3):
+                row.setToolTip(col, tip)
+            self.list.addTopLevelItem(row)
+        self.list.itemChanged.connect(lambda _item, _col: self._update_count())
+        self.list.itemClicked.connect(self._clicked)
 
         bar = QHBoxLayout()
         bar.setSpacing(6)
@@ -223,7 +262,7 @@ class CheckList(QWidget):
         bar.addWidget(_chip("Recommended", self.select_recommended,
                             "Tick only the items marked ★, the ones that are safe for most machines."))
         bar.addWidget(_chip("All", lambda: self.set_checked({it.id for it in self._items}),
-                            "Tick every item in this list. Read the notes first."))
+                            "Tick every item in this list. Read the descriptions first."))
         bar.addWidget(_chip("None", lambda: self.set_checked(set()),
                             "Untick everything in this list."))
 
@@ -234,31 +273,61 @@ class CheckList(QWidget):
         layout.addWidget(self.list, 1)
         self._update_count()
 
+    def _clicked(self, item, column) -> None:
+        # Clicking the box toggles it already. Clicking anywhere else on the row toggles it too.
+        if column != 0:
+            on = item.checkState(0) == Qt.CheckState.Checked
+            item.setCheckState(0, Qt.CheckState.Unchecked if on else Qt.CheckState.Checked)
+
     def _filter(self, text: str) -> None:
         t = text.lower().strip()
-        for i in range(self.list.count()):
-            li = self.list.item(i)
-            li.setHidden(bool(t) and t not in li.text().lower() and t not in li.toolTip().lower())
+        for i in range(self.list.topLevelItemCount()):
+            row = self.list.topLevelItem(i)
+            hay = (row.text(1) + " " + row.text(2) + " " + row.toolTip(1)).lower()
+            row.setHidden(bool(t) and t not in hay)
 
     def _update_count(self) -> None:
-        on = len(self.checked())
-        self.count.setText(f"{on} of {len(self._items)} ticked")
+        self.count.setText(f"{len(self.checked())} of {len(self._items)} ticked")
 
     def checked(self) -> list[str]:
-        return [self.list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.list.count())
-                if self.list.item(i).checkState() == Qt.CheckState.Checked]
+        out = []
+        for i in range(self.list.topLevelItemCount()):
+            row = self.list.topLevelItem(i)
+            if row.checkState(0) == Qt.CheckState.Checked:
+                out.append(row.data(0, Qt.ItemDataRole.UserRole))
+        return out
 
     def set_checked(self, ids: set) -> None:
         self.list.blockSignals(True)
-        for i in range(self.list.count()):
-            li = self.list.item(i)
-            on = li.data(Qt.ItemDataRole.UserRole) in ids
-            li.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
+        for i in range(self.list.topLevelItemCount()):
+            row = self.list.topLevelItem(i)
+            on = row.data(0, Qt.ItemDataRole.UserRole) in ids
+            row.setCheckState(0, Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
         self.list.blockSignals(False)
         self._update_count()
 
     def select_recommended(self) -> None:
         self.set_checked({k for k, rec in self._recommended.items() if rec})
+
+
+class TitleBar(QFrame):
+    """The top bar. It is also the drag handle, because the window has no Windows title bar."""
+
+    def __init__(self, window: QMainWindow):
+        super().__init__()
+        self._window = window
+        self.setObjectName("topbar")
+
+    def mousePressEvent(self, event):
+        handle = self._window.windowHandle()
+        if event.button() == Qt.MouseButton.LeftButton and handle is not None:
+            handle.startSystemMove()
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._window.toggle_maximize()
+        super().mouseDoubleClickEvent(event)
 
 
 class RowTable(QWidget):
@@ -305,12 +374,145 @@ class RowTable(QWidget):
                 self.table.setItem(r, c, QTableWidgetItem(str(v)))
 
 
+def _clean_folder(text: str) -> str | None:
+    """Turn typed text into a folder path inside the image, or None if it is not allowed."""
+    folder = text.strip().replace("/", "\\").strip("\\")
+    parts = [p for p in folder.split("\\") if p]
+    if ":" in folder or ".." in parts:
+        return None
+    return "\\".join(parts)
+
+
+class FileTree(QTreeWidget):
+    """Files and folders copied into the image. Each top-level row is a folder inside the image.
+
+    Drag files or folders from Explorer onto a folder row. Drop on empty space and you will be asked for
+    the folder. A folder row appears when it has at least one file, and disappears when its last file is removed.
+    """
+
+    def __init__(self, store_path, ask_folder):
+        super().__init__()
+        self._store = store_path   # turns an absolute path into the form saved in the profile
+        self._ask = ask_folder     # asks which folder to use when nothing was picked
+        self.setObjectName("well")
+        self.setColumnCount(2)
+        self.setHeaderLabels(["Folder inside the image", "Copied from"])
+        self.setColumnWidth(0, 340)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DropOnly)
+        self.setToolTip("Each file is copied to the folder on the left. Drag files in from Explorer, "
+                        "or use the buttons below.")
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.topLevelItemCount() == 0:
+            p = QPainter(self.viewport())
+            p.setPen(QColor(DIM))
+            p.drawText(self.viewport().rect().adjusted(0, 30, 0, 0), Qt.AlignmentFlag.AlignCenter,
+                       "Drop files or folders here\nor use Add files… and Add folder…")
+            p.end()
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        paths = [u.toLocalFile() for u in event.mimeData().urls() if u.isLocalFile()]
+        if not paths:
+            return
+        folder = self._folder_at(event.position().toPoint())
+        if folder is None:
+            folder = self._ask()
+        if folder is not None:
+            for path in paths:
+                self.add_path(folder, path)
+        event.acceptProposedAction()
+
+    def _folder_at(self, pos):
+        item = self.itemAt(pos)
+        if item is None:
+            return None
+        while item.parent() is not None:
+            item = item.parent()
+        return item.data(0, Qt.ItemDataRole.UserRole)
+
+    def selected_folder(self):
+        items = self.selectedItems()
+        if not items:
+            return None
+        item = items[0]
+        while item.parent() is not None:
+            item = item.parent()
+        return item.data(0, Qt.ItemDataRole.UserRole)
+
+    def _top(self, folder: str) -> QTreeWidgetItem:
+        for i in range(self.topLevelItemCount()):
+            top = self.topLevelItem(i)
+            if top.data(0, Qt.ItemDataRole.UserRole) == folder:
+                return top
+        top = QTreeWidgetItem([folder or "(image root)", ""])
+        top.setData(0, Qt.ItemDataRole.UserRole, folder)
+        top.setToolTip(0, f"Files here are copied to {folder}\\" if folder
+                       else "Files here are copied to the root of the image")
+        self.addTopLevelItem(top)
+        top.setExpanded(True)
+        return top
+
+    def _add(self, folder: str, name: str, source: str) -> bool:
+        top = self._top(folder)
+        for j in range(top.childCount()):
+            if top.child(j).text(0).lower() == name.lower():
+                return False
+        child = QTreeWidgetItem(top, [name, source])
+        child.setToolTip(0, f"{folder}\\{name}" if folder else name)
+        child.setToolTip(1, source)
+        return True
+
+    def add_path(self, folder: str, path: str) -> None:
+        name = os.path.basename(os.path.normpath(path))
+        if not self._add(folder, name, self._store(path)):
+            QMessageBox.information(self, "Already added",
+                                    f"'{name}' is already in {folder or 'the image root'}.")
+
+    def set_entries(self, entries) -> None:
+        self.clear()
+        for e in entries:
+            folder, _, name = e["to"].rpartition("\\")
+            self._add(folder, name, e["from"])
+
+    def entries(self) -> list[dict]:
+        out = []
+        for i in range(self.topLevelItemCount()):
+            top = self.topLevelItem(i)
+            folder = top.data(0, Qt.ItemDataRole.UserRole)
+            for j in range(top.childCount()):
+                child = top.child(j)
+                name = child.text(0)
+                out.append({"from": child.text(1), "to": f"{folder}\\{name}" if folder else name})
+        return out
+
+    def remove_selected(self) -> None:
+        for item in self.selectedItems():
+            parent = item.parent()
+            if parent is None:
+                self.takeTopLevelItem(self.indexOfTopLevelItem(item))
+            else:
+                parent.removeChild(item)
+                if parent.childCount() == 0:
+                    self.takeTopLevelItem(self.indexOfTopLevelItem(parent))
+
+
 # -------------------------------------------------------------------- window
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("WinForge")
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.resize(1200, 820)
         self._path: Path | None = None
         self._name = "custom"
@@ -344,6 +546,7 @@ class MainWindow(QMainWindow):
         self._tick.timeout.connect(self._refresh)
         self._tick.start(400)
 
+        QApplication.instance().installEventFilter(self)
         self.refresh_presets()
         self.load_ui(default_profile())
         self._baseline = self._snapshot(default_profile())
@@ -358,8 +561,7 @@ class MainWindow(QMainWindow):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        top = QFrame()
-        top.setObjectName("topbar")
+        top = TitleBar(self)
         tl = QHBoxLayout(top)
         tl.setContentsMargins(14, 8, 14, 8)
         tl.setSpacing(8)
@@ -382,6 +584,12 @@ class MainWindow(QMainWindow):
         tl.addWidget(_button("Save as…", self.save_as, tip="Save a copy of this profile to a new file"))
         tl.addWidget(_button("Build…", lambda: self.go("Build"), "primary",
                              tip="Open the build page to preview or build the ISO"))
+        tl.addSpacing(8)
+        tl.addWidget(_button("–", self.showMinimized, "winctl", "Minimise"))
+        tl.addWidget(_button("▢", self.toggle_maximize, "winctl", "Maximise or restore"))
+        tl.addWidget(_button("✕", self.close, "winclose", "Close WinForge"))
+        for b in top.findChildren(QPushButton):
+            b.setFixedHeight(28)
         outer.addWidget(top)
 
         body = QHBoxLayout()
@@ -408,7 +616,44 @@ class MainWindow(QMainWindow):
         body.addWidget(self.nav)
         body.addLayout(self.nav_body, 1)
         outer.addLayout(body, 1)
+
+        info = QFrame()
+        info.setObjectName("info")
+        info.setFixedHeight(64)
+        il = QVBoxLayout(info)
+        il.setContentsMargins(14, 8, 14, 8)
+        il.setSpacing(3)
+        cap = QLabel("INFO")
+        cap.setObjectName("infoCap")
+        self.info_text = QLabel(INFO_DEFAULT)
+        self.info_text.setObjectName("infoText")
+        self.info_text.setWordWrap(True)
+        self.info_text.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        il.addWidget(cap)
+        il.addWidget(self.info_text, 1)
+        outer.addWidget(info)
         return root
+
+    def eventFilter(self, obj, event):
+        """Live-style Info View: show the description of whatever is under the mouse."""
+        kind = event.type()
+        if isinstance(obj, QWidget) and obj.window() is self:
+            tip = ""
+            parent = obj.parent()
+            if kind == QEvent.Type.MouseMove and isinstance(parent, QAbstractItemView):
+                index = parent.indexAt(event.position().toPoint())
+                tip = index.data(Qt.ItemDataRole.ToolTipRole) if index.isValid() else ""
+            elif kind == QEvent.Type.Enter:
+                tip = obj.toolTip()
+            if tip:
+                self.info_text.setText(str(tip).replace("\n\n", "  ").replace("\n", "  "))
+        return False
+
+    def toggle_maximize(self) -> None:
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
 
     def go(self, name: str) -> None:
         self.nav.setCurrentRow(PAGES.index(name))
@@ -543,8 +788,9 @@ class MainWindow(QMainWindow):
                                            "Hover over a row for the full explanation."), "Tweaks")
         custom_page = QWidget()
         cl = QVBoxLayout(custom_page)
-        cl.setContentsMargins(0, 0, 0, 0)
-        cl.addWidget(_help("For registry values you know exactly. Hive is SOFTWARE, SYSTEM or DEFAULT "
+        cl.setContentsMargins(0, 10, 0, 0)
+        cl.setSpacing(8)
+        cl.addWidget(_panel_head("For registry values you know exactly. Hive is SOFTWARE, SYSTEM or DEFAULT "
                            "(DEFAULT is the new-user profile). Key is a path inside the hive. "
                            "Leave Name empty to set the key's default value."))
         cl.addWidget(self.custom, 1)
@@ -552,8 +798,9 @@ class MainWindow(QMainWindow):
 
         files_page = QWidget()
         fl = QVBoxLayout(files_page)
-        fl.setContentsMargins(0, 0, 0, 0)
-        fl.addWidget(_help("Regedit exports (.reg). Their keys must be under HKEY_LOCAL_MACHINE\\SOFTWARE, "
+        fl.setContentsMargins(0, 10, 0, 0)
+        fl.setSpacing(8)
+        fl.addWidget(_panel_head("Regedit exports (.reg). Their keys must be under HKEY_LOCAL_MACHINE\\SOFTWARE, "
                            "HKEY_LOCAL_MACHINE\\SYSTEM or HKEY_CURRENT_USER. Other keys and deletions are skipped "
                            "and listed as warnings in the build log."))
         fl.addWidget(self.reg_files, 1)
@@ -576,8 +823,9 @@ class MainWindow(QMainWindow):
             title, help_text = PHASE_TITLES[phase]
             tab = QWidget()
             tl = QVBoxLayout(tab)
-            tl.setContentsMargins(0, 0, 0, 0)
-            tl.addWidget(_help(help_text))
+            tl.setContentsMargins(0, 10, 0, 0)
+            tl.setSpacing(8)
+            tl.addWidget(_panel_head(help_text))
             combo = QComboBox()
             combo.addItems(list(SNIPPETS))
             combo.setToolTip("Insert a ready-made command at the cursor. Replace the <angle brackets> with real values.")
@@ -591,20 +839,33 @@ class MainWindow(QMainWindow):
 
         files = QWidget()
         fl = QVBoxLayout(files)
-        fl.setContentsMargins(0, 0, 0, 0)
-        fl.addWidget(_help("Files and folders copied into the image before setup runs. "
-                           "From is relative to the profile, or absolute. To is the path inside Windows, "
-                           "for example Windows\\Setup\\Scripts\\tweak.ps1"))
-        self.files = RowTable(["From", "To"],
-                              add_tip="Add a file to copy into the image",
-                              remove_tip="Remove the selected rows (the files themselves are not deleted)")
-        fl.addWidget(self.files, 1)
+        fl.setContentsMargins(0, 10, 0, 0)
+        fl.setSpacing(8)
+        fl.addWidget(_panel_head("Files and folders copied into the image before setup runs. Each folder row is a folder "
+                           "inside the image. Drag files from Explorer onto a folder, or use the buttons. "
+                           "To make a new folder, add a file and type its name. Folders appear only when they hold files."))
+        self.files_tree = FileTree(self._store_path, self._ask_folder)
+        bar = QHBoxLayout()
+        bar.setSpacing(6)
+        bar.addWidget(_button("Add files…", self._add_files,
+                              tip="Choose files to copy. They go into the folder selected above, or you are asked for one."))
+        bar.addWidget(_button("Add folder…", self._add_folder,
+                              tip="Copy a whole folder, with everything in it, into the image."))
+        bar.addWidget(_button("Remove selected", self.files_tree.remove_selected,
+                              tip="Remove the selected files or folders from the list. Nothing on your disk is deleted."))
+        bar.addStretch()
+        fl.addLayout(bar)
+        fl.addWidget(self.files_tree, 1)
+        fl.addWidget(_help("Paths start at the system drive (C:). Windows\\Setup\\Scripts is where SetupComplete.cmd "
+                           "lives. WinForge doesn't use $OEM$ folders. Every file here has one exact destination, "
+                           "so nothing has to be placed by hand."))
         tabs.addTab(files, "Files")
 
         drivers = QWidget()
         dl = QVBoxLayout(drivers)
-        dl.setContentsMargins(0, 0, 0, 0)
-        dl.addWidget(_help("Drivers: folders that contain .inf files. They are added recursively. "
+        dl.setContentsMargins(0, 10, 0, 0)
+        dl.setSpacing(8)
+        dl.addWidget(_panel_head("Drivers: folders that contain .inf files. They are added recursively. "
                            "Updates: .msu or .cab packages installed into the image."))
         self.drivers = QPlainTextEdit()
         self.drivers.setToolTip("One driver folder per line.")
@@ -718,9 +979,9 @@ class MainWindow(QMainWindow):
     def _tab(self, widget: QWidget, note: str) -> QWidget:
         tab = QWidget()
         tl = QVBoxLayout(tab)
-        tl.setContentsMargins(0, 8, 0, 0)
+        tl.setContentsMargins(0, 10, 0, 0)
         tl.setSpacing(8)
-        tl.addWidget(_help(note))
+        tl.addWidget(_panel_head(note))
         tl.addWidget(widget, 1)
         return tab
 
@@ -764,7 +1025,7 @@ class MainWindow(QMainWindow):
                               for r in p["registry"] if _entry_key(r) not in catalog_keys])
         _set_lines(self.reg_files, p["reg_files"])
 
-        self.files.set_rows([[f["from"], f["to"]] for f in p["files"]])
+        self.files_tree.set_entries(p["files"])
         _set_lines(self.drivers, p["drivers"])
         _set_lines(self.updates, p["updates"])
         for phase, editor in self.scripts.items():
@@ -813,7 +1074,7 @@ class MainWindow(QMainWindow):
             "reg_files": _lines(self.reg_files),
             "services_disable": self.services.checked(),
             "tasks_remove": _lines(self.tasks_remove),
-            "files": [{"from": a, "to": b} for a, b in self.files.rows()],
+            "files": self.files_tree.entries(),
             "scripts": {phase: _lines(editor) for phase, editor in self.scripts.items()},
             "region": {
                 "timezone": self.timezone.currentText().strip(),
@@ -887,22 +1148,22 @@ class MainWindow(QMainWindow):
     # ----------------------------------------------------------- source picks
 
     def _pick_iso(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Choose a Windows ISO", "", "ISO image (*.iso)")
+        path, _ = _qt_open_file(self, "Choose a Windows ISO", "", "ISO image (*.iso)")
         if path:
             self.source.setText(path)
 
     def _pick_folder(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Choose the extracted Windows folder")
+        path = _qt_dir(self, "Choose the extracted Windows folder")
         if path:
             self.source.setText(path)
 
     def _pick_dir(self, target: QLineEdit) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Choose a folder")
+        path = _qt_dir(self, "Choose a folder")
         if path:
             target.setText(path)
 
     def _pick_out(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Output ISO", self.out.text(), "ISO image (*.iso)")
+        path, _ = _qt_save_file(self, "Output ISO", self.out.text(), "ISO image (*.iso)")
         if path:
             self.out.setText(path)
 
@@ -948,17 +1209,51 @@ class MainWindow(QMainWindow):
         combo.setCurrentIndex(0)
 
     def _add_driver(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Choose a driver folder")
+        path = _qt_dir(self, "Choose a driver folder")
         if path:
             self.drivers.appendPlainText(self._store_path(path))
 
     def _add_update(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Choose an update", "", "Update packages (*.msu *.cab)")
+        path, _ = _qt_open_file(self, "Choose an update", "", "Update packages (*.msu *.cab)")
         if path:
             self.updates.appendPlainText(self._store_path(path))
 
+    def _ask_folder(self) -> str | None:
+        text, ok = QInputDialog.getText(
+            self, "Folder inside the image",
+            "Which folder inside the image should it go in?\n"
+            "Use a path under the system drive, for example Windows\\Setup\\Scripts.\n"
+            "Leave it blank for the root of the drive (C:\\).",
+            text="Windows\\Setup\\Scripts")
+        if not ok:
+            return None
+        folder = _clean_folder(text)
+        if folder is None:
+            QMessageBox.warning(self, "Folder not allowed", "Use a folder path without a drive letter or '..'.")
+        return folder
+
+    def _target_folder(self) -> str | None:
+        folder = self.files_tree.selected_folder()
+        return folder if folder is not None else self._ask_folder()
+
+    def _add_files(self) -> None:
+        folder = self._target_folder()
+        if folder is None:
+            return
+        paths, _ = _qt_open_files(self, "Choose files to copy into the image")
+        for path in paths:
+            self.files_tree.add_path(folder, path)
+
+    def _add_folder(self) -> None:
+        folder = self._target_folder()
+        if folder is None:
+            return
+        path = _qt_dir(self, "Choose a folder to copy into the image")
+        if path:
+            self.files_tree.add_path(folder, path)
+
     def _add_reg(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Choose a .reg file", "", "Registry files (*.reg)")
+        path, _ = _qt_open_file(self, "Choose a .reg file", "", "Registry files (*.reg)")
         if path:
             self.reg_files.appendPlainText(self._store_path(path))
 
@@ -1055,7 +1350,7 @@ class MainWindow(QMainWindow):
         self.go("Source")
 
     def open_profile(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Open a profile", "", "Profile (*.json)")
+        path, _ = _qt_open_file(self, "Open a profile", "", "Profile (*.json)")
         if not path:
             return
         try:
@@ -1089,7 +1384,7 @@ class MainWindow(QMainWindow):
         return self._write(self._path) if self._path else self.save_as()
 
     def save_as(self) -> bool:
-        path, _ = QFileDialog.getSaveFileName(self, "Save profile", f"{self._name}.json", "Profile (*.json)")
+        path, _ = _qt_save_file(self, "Save profile", f"{self._name}.json", "Profile (*.json)")
         return self._write(Path(path)) if path else False
 
     # -------------------------------------------------------------- builds
