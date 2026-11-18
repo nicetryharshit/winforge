@@ -180,7 +180,7 @@ QFileDialog QTreeView, QFileDialog QListView {{
 /* Window controls on the top bar (the window has no Windows title bar) */
 QPushButton#winctl, QPushButton#winclose {{
     background: transparent; border: none; border-radius: 0; padding: 0;
-    min-width: 46px; min-height: 30px; color: {MUTED}; font-size: 10pt; font-weight: 400;
+    margin: 0; color: {MUTED}; font-size: 10pt; font-weight: 400;
 }}
 QPushButton#winctl:hover {{ background: {PANEL_2}; color: {TEXT}; }}
 QPushButton#winclose:hover {{ background: #c42b1c; color: #ffffff; }}

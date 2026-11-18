@@ -31,6 +31,8 @@ from .ntlite import import_ntlite
 from .profile import PHASES, ProfileError, default_profile, load_profile, normalise, save_profile
 from .theme import ACCENT, DIM, MUTED, STYLE, apply_palette
 
+TOP_H = 34          # title bar height
+WIN_BTN_W = 46      # window control button width
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_WORK = r"C:\WinForge\work"
 DEFAULT_OUT = r"C:\WinForge\out\custom.iso"
@@ -656,8 +658,9 @@ class MainWindow(QMainWindow):
 
         top = TitleBar(self)
         tl = QHBoxLayout(top)
-        tl.setContentsMargins(14, 8, 14, 8)
+        tl.setContentsMargins(14, 0, 0, 0)
         tl.setSpacing(8)
+        top.setFixedHeight(TOP_H)
         brand = QLabel("WINFORGE")
         brand.setObjectName("brand")
         brand.setToolTip("WinForge: build a customised Windows ISO")
@@ -686,12 +689,20 @@ class MainWindow(QMainWindow):
         ]
         for b in self._top_actions:
             tl.addWidget(b)
-        tl.addSpacing(8)
-        tl.addWidget(_button("–", self.showMinimized, "winctl", "Minimise"))
-        tl.addWidget(_button("▢", self.toggle_maximize, "winctl", "Maximise or restore"))
-        tl.addWidget(_button("✕", self.close, "winclose", "Close WinForge"))
-        for b in top.findChildren(QPushButton):
-            b.setFixedHeight(28)
+        tl.addSpacing(10)
+        controls = QHBoxLayout()
+        controls.setContentsMargins(0, 0, 0, 0)
+        controls.setSpacing(0)
+        for label, slot, name, tip in (("–", self.showMinimized, "winctl", "Minimise"),
+                                       ("▢", self.toggle_maximize, "winctl", "Maximise or restore"),
+                                       ("✕", self.close, "winclose", "Close WinForge")):
+            b = _button(label, slot, name, tip)
+            b.setFixedSize(WIN_BTN_W, TOP_H - 1)
+            controls.addWidget(b)
+        for b in self._top_actions:
+            b.setFixedHeight(24)
+        tl.addLayout(controls)
+        tl.setAlignment(controls, Qt.AlignmentFlag.AlignTop)
         outer.addWidget(top)
         self._top = top
         self._root = root
