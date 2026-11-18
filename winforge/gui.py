@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from . import catalog, presets
 from .appsetup import describe_app
+from .recipes import for_stage
 from .ntlite import import_ntlite
 from .profile import PHASES, ProfileError, default_profile, load_profile, normalise, save_profile
 from .theme import ACCENT, DIM, MUTED, STYLE, apply_palette
@@ -39,19 +40,52 @@ DEFAULT_OUT = r"C:\WinForge\out\custom.iso"
 
 INFO_DEFAULT = "Hover over anything to see what it does."
 
-PAGES = ("Start", "Source", "Debloat", "Tweaks", "Scripts", "App", "Account", "Build")
+PAGES = ("Start", "Source", "Debloat", "Tweaks", "Files", "Account", "App",
+         "Before setup finishes", "After setup, once", "First sign-in", "Every sign-in", "Every boot", "Build")
+
+# Sidebar groups. Settings describe the PC; the stages are things that run on it, in the order Windows reaches them.
+NAV = (
+    ("SETTINGS", PAGES[0:7]),
+    ("RUN ON THE PC", PAGES[7:12]),
+    (None, PAGES[12:]),
+)
+
+PAGE_PHASE = {
+    "Before setup finishes": "specialize",
+    "After setup, once": "setupcomplete",
+    "First sign-in": "firstlogon",
+    "Every sign-in": "everylogon",
+    "Every boot": "everyboot",
+}
+
+PAGE_TIP = {
+    "Start": "Presets and saved profiles",
+    "Source": "Pick the Windows ISO or folder, the edition, and output options",
+    "Debloat": "Apps, optional features and services to remove or switch off",
+    "Tweaks": "Registry changes, .reg files and custom registry entries",
+    "Files": "Files and drivers added to the image while it is built",
+    "Account": "The first account, sign-in, time zone and language",
+    "App": "Copy your own program to the new PC and choose how it starts",
+    "Before setup finishes": "Runs as SYSTEM right after Windows is copied to the PC, before setup screens",
+    "After setup, once": "Runs once, as SYSTEM, after Windows setup finishes. Drivers and system changes go here",
+    "First sign-in": "Runs once for each user, the first time that user signs in",
+    "Every sign-in": "Runs every time a user signs in",
+    "Every boot": "Runs every time Windows starts, before anyone signs in",
+    "Build": "Preview the plan or build the ISO",
+}
 
 PHASE_TITLES = {
-    "specialize": ("Specialize",
-                   "Runs as SYSTEM during setup, after files are copied and before the first setup screens. "
-                   "Use it for early system changes. One command per line."),
-    "setupcomplete": ("SetupComplete",
-                      "Runs as SYSTEM once Windows setup finishes, before anyone signs in. Good for installing "
-                      "drivers, removing services and changing system-wide settings. WinForge writes this file "
-                      "to Windows\\Setup\\Scripts\\SetupComplete.cmd inside the image, so you don't place it yourself."),
-    "firstlogon": ("First logon",
-                   "Runs once, as the new account, the first time it signs in. Good for per-user settings "
-                   "and winget installs."),
+    "specialize": ("Before setup finishes",
+                   "Runs as SYSTEM right after Windows is copied to the PC, before the setup screens. Rarely needed."),
+    "setupcomplete": ("After setup, once",
+                      "Runs once, as SYSTEM, after Windows setup finishes and before anyone signs in. Install drivers "
+                      "here, remove services and make system-wide changes. WinForge writes SetupComplete.cmd for you."),
+    "firstlogon": ("First sign-in",
+                   "Runs once for each user, the first time that user signs in. Good for per-user settings."),
+    "everylogon": ("Every sign-in",
+                   "Runs every time a user signs in, as that user. WinForge creates a scheduled task for it."),
+    "everyboot": ("Every boot",
+                  "Runs every time Windows starts, before anyone signs in, as SYSTEM. WinForge creates a scheduled task for it."),
 }
 
 SNIPPETS = {
@@ -622,11 +656,19 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self._build_shell())
 
         self.stack = QStackedWidget()
-        builders = (self._page_start, self._page_source, self._page_debloat,
-                    self._page_tweaks, self._page_scripts, self._page_app, self._page_account,
-                    self._page_build)
-        for build in builders:
-            self.stack.addWidget(build())
+        self.step_checks: dict[str, list] = {}
+        self._overlay_cancel = None
+        self.scripts: dict[str, QPlainTextEdit] = {}
+        builders = {
+            "Start": self._page_start, "Source": self._page_source, "Debloat": self._page_debloat,
+            "Tweaks": self._page_tweaks, "Files": self._page_files, "Account": self._page_account,
+            "App": self._page_app, "Build": self._page_build,
+        }
+        for phase in PHASE_TITLES:
+            page_name = next(n for n, ph in PAGE_PHASE.items() if ph == phase)
+            builders[page_name] = (lambda ph=phase: self._page_stage(ph))
+        for name in PAGES:
+            self.stack.addWidget(builders[name]())
         self.nav.currentRowChanged.connect(self._on_page_changed)
         self.nav_body.addWidget(self.stack, 1)
 
@@ -645,7 +687,7 @@ class MainWindow(QMainWindow):
         self.refresh_presets()
         self.load_ui(default_profile())
         self._baseline = self._snapshot(default_profile())
-        self.nav.setCurrentRow(0)
+        self.go("Start")
 
     # ------------------------------------------------------------- shell
 
@@ -714,19 +756,17 @@ class MainWindow(QMainWindow):
         self.nav.setObjectName("nav")
         self.nav.setFixedWidth(176)
         self.nav.setToolTip("Pages, in the order you normally use them")
-        for i, name in enumerate(PAGES, 1):
-            item = QListWidgetItem(f"{i:02d}   {name}")
-            item.setToolTip({
-                "Start": "Presets and saved profiles",
-                "Source": "Pick the Windows ISO or folder, the edition, and output options",
-                "Debloat": "Apps, optional features and services to remove or switch off",
-                "Tweaks": "Registry changes, .reg files and custom registry entries",
-                "Scripts": "Commands and files that run during setup, and drivers",
-                "App": "Copy your own program to the new PC and choose how it starts",
-                "Account": "The first account, sign-in, time zone and language",
-                "Build": "Preview the plan or build the ISO",
-            }[name])
-            self.nav.addItem(item)
+        for header, names in NAV:
+            if header:
+                h = QListWidgetItem(header)
+                h.setFlags(Qt.ItemFlag.NoItemFlags)
+                h.setForeground(QColor(DIM))
+                self.nav.addItem(h)
+            for name in names:
+                item = QListWidgetItem("    " + name)
+                item.setData(Qt.ItemDataRole.UserRole, name)
+                item.setToolTip(PAGE_TIP[name])
+                self.nav.addItem(item)
         self.nav_body = QVBoxLayout()
         self.nav_body.setContentsMargins(0, 0, 0, 0)
         body.addWidget(self.nav)
@@ -799,10 +839,9 @@ class MainWindow(QMainWindow):
         if overlay:
             self.overlay.title.setText(title)
             self.overlay.detail.setText(detail)
-            try:
-                self.overlay.cancel.clicked.disconnect()
-            except (RuntimeError, TypeError):
-                pass
+            if self._overlay_cancel is not None:
+                self.overlay.cancel.clicked.disconnect(self._overlay_cancel)
+            self._overlay_cancel = cancel
             self.overlay.cancel.setVisible(cancel is not None)
             if cancel is not None:
                 self.overlay.cancel.clicked.connect(cancel)
@@ -812,7 +851,6 @@ class MainWindow(QMainWindow):
             self.overlay.setFocus()
         else:
             self.go("Build")
-            self.nav.setCurrentRow(PAGES.index("Build"))
 
     def _unlock(self) -> None:
         self._locked = False
@@ -846,11 +884,17 @@ class MainWindow(QMainWindow):
             self.showMaximized()
 
     def go(self, name: str) -> None:
-        self.nav.setCurrentRow(PAGES.index(name))
+        for row in range(self.nav.count()):
+            if self.nav.item(row).data(Qt.ItemDataRole.UserRole) == name:
+                self.nav.setCurrentRow(row)
+                return
 
     def _on_page_changed(self, row: int) -> None:
-        self.stack.setCurrentIndex(row)
-        if PAGES[row] == "Start":
+        name = self.nav.item(row).data(Qt.ItemDataRole.UserRole) if row >= 0 else None
+        if name is None:
+            return
+        self.stack.setCurrentIndex(PAGES.index(name))
+        if name == "Start":
             self.refresh_presets()
 
     # -------------------------------------------------------------- pages
@@ -1020,30 +1064,12 @@ class MainWindow(QMainWindow):
         lay.addWidget(tabs, 1)
         return page
 
-    def _page_scripts(self) -> QWidget:
-        page, lay = _page("Scripts",
-                          "Commands and files that run during setup, plus drivers and updates. Each phase runs at a "
-                          "different time, shown on its tab.", scroll=False)
+    def _page_files(self) -> QWidget:
+        page, lay = _page("Files and drivers",
+                          "Files and drivers that go into the image while it is built. Everything here lands at an exact "
+                          "place on the PC. Things that run on the PC are on the stage pages under Run on the PC.",
+                          scroll=False)
         tabs = QTabWidget()
-        self.scripts: dict[str, QPlainTextEdit] = {}
-        for phase in PHASES:
-            title, help_text = PHASE_TITLES[phase]
-            tab = QWidget()
-            tl = QVBoxLayout(tab)
-            tl.setContentsMargins(0, 10, 0, 0)
-            tl.setSpacing(8)
-            tl.addWidget(_panel_head(help_text))
-            combo = DropDown()
-            combo.addItems(list(SNIPPETS))
-            combo.setToolTip("Insert a ready-made command at the cursor. Replace the <angle brackets> with real values.")
-            editor = QPlainTextEdit()
-            editor.setToolTip("One command per line. Commands run in order.")
-            self.scripts[phase] = editor
-            combo.activated.connect(lambda i, e=editor, c=combo: self._insert_snippet(e, c, i))
-            tl.addWidget(combo)
-            tl.addWidget(editor, 1)
-            tabs.addTab(tab, title)
-
         files = QWidget()
         fl = QVBoxLayout(files)
         fl.setContentsMargins(0, 10, 0, 0)
@@ -1083,23 +1109,79 @@ class MainWindow(QMainWindow):
         dl.addWidget(_button("Add update package…", self._add_update,
                              tip="Choose a .msu or .cab update package to add"), 0)
         dl.addWidget(self.updates, 1)
-        dl.addWidget(_help("First-boot installs: drivers you can't add to the image, such as a graphics driver "
-                           "installer or a Wi-Fi driver folder. They are copied to C:\\Drivers and installed on the "
-                           "first start."))
-        self.drivers_boot = QPlainTextEdit()
-        self.drivers_boot.setToolTip("One driver folder per line. Installed on the new PC with pnputil.")
-        dl.addWidget(_button("Add first-boot driver folder…", self._add_driver_boot,
-                             tip="Choose a folder of .inf drivers to install on the first start"), 0)
-        dl.addWidget(self.drivers_boot, 1)
-        self.installers = QPlainTextEdit()
-        self.installers.setToolTip("One installer per line. Add silent switches after a | bar, for example nvidia.exe|/s /quiet")
-        dl.addWidget(_button("Add first-boot installer…", self._add_installer,
-                             tip="Choose an .exe or .msi to run silently on the first start"), 0)
-        dl.addWidget(self.installers, 1)
         tabs.addTab(drivers, "Drivers && updates")
 
         lay.addWidget(tabs, 1)
         return page
+
+    def _page_stage(self, phase: str) -> QWidget:
+        title, help_text = PHASE_TITLES[phase]
+        page, lay = _page(title, help_text, scroll=True)
+        if phase == "setupcomplete":
+            lay.addWidget(_section("Drivers and installers"))
+            lay.addWidget(_help("Installed on the new PC during this stage. Driver folders are copied to C:\\Drivers "
+                                "and installed with pnputil. Installers run silently; add switches after the | bar."))
+            self.drivers_boot = QPlainTextEdit()
+            self.drivers_boot.setToolTip("One driver folder per line. Installed on the new PC with pnputil.")
+            self.drivers_boot.setMaximumHeight(90)
+            lay.addWidget(_button("Add driver folder…", self._add_driver_boot,
+                                  tip="Choose a folder of .inf drivers to install on the new PC"), 0)
+            lay.addWidget(self.drivers_boot)
+            self.installers = QPlainTextEdit()
+            self.installers.setToolTip("One installer per line. Add silent switches after a | bar, for example nvidia.exe|/s /quiet")
+            self.installers.setMaximumHeight(90)
+            lay.addWidget(_button("Add installer…", self._add_installer,
+                                  tip="Choose an .exe or .msi to run silently on the new PC"), 0)
+            lay.addWidget(self.installers)
+
+        lay.addWidget(_section("Ready-made steps"))
+        recipes = for_stage(phase)
+        self.step_checks[phase] = []
+        if not recipes:
+            lay.addWidget(_help("No ready-made steps for this stage yet. Use the commands box below."))
+        for recipe in recipes:
+            box = QCheckBox(recipe.title)
+            box.setToolTip(recipe.note)
+            lay.addWidget(box)
+            lay.addWidget(_help(recipe.note))
+            self.step_checks[phase].append((recipe.id, box))
+
+        lay.addWidget(_section("Your commands"))
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        combo = DropDown()
+        combo.addItems(list(SNIPPETS))
+        combo.setToolTip("Insert a ready-made command at the cursor. Replace the <angle brackets> with real values.")
+        row.addWidget(combo, 1)
+        row.addWidget(_button("Add my own script…", lambda: self._add_stage_script(phase),
+                              tip="Pick a .ps1, .cmd or .exe file. It is copied into Windows\\Setup\\Scripts and runs in this stage."))
+        lay.addLayout(row)
+        editor = QPlainTextEdit()
+        editor.setMinimumHeight(160)
+        editor.setToolTip("One command per line. Commands run in order, after the ready-made steps above.")
+        self.scripts[phase] = editor
+        combo.activated.connect(lambda i, e=editor, c=combo: self._insert_snippet(e, c, i))
+        lay.addWidget(editor, 1)
+        return page
+
+    def _add_stage_script(self, phase: str) -> None:
+        path, _ = _qt_open_file(self, "Choose a script", "", "Scripts (*.ps1 *.cmd *.bat *.exe)")
+        if not path:
+            return
+        name = os.path.basename(path)
+        entries = self.files_tree.entries()
+        entries.append({"from": self._store_path(path), "to": f"Windows\\Setup\\Scripts\\{name}"})
+        self.files_tree.set_entries(entries)
+        where = f"%WINDIR%\\Setup\\Scripts\\{name}"
+        lower = name.lower()
+        if lower.endswith(".ps1"):
+            line = f'powershell -NoProfile -ExecutionPolicy Bypass -File "{where}"'
+        elif lower.endswith((".cmd", ".bat")):
+            line = f'call "{where}"'
+        else:
+            line = f'start /wait "" "{where}"'
+        self.scripts[phase].appendPlainText(line)
+        self._refresh()
 
     def _page_app(self) -> QWidget:
         page, lay = _page("App",
@@ -1332,6 +1414,10 @@ class MainWindow(QMainWindow):
         _set_lines(self.updates, p["updates"])
         for phase, editor in self.scripts.items():
             editor.setPlainText("\n".join(p["scripts"][phase]))
+        for phase, boxes in self.step_checks.items():
+            saved = {s["recipe"]: bool(s["enabled"]) for s in p["steps"].get(phase, [])}
+            for recipe_id, box in boxes:
+                box.setChecked(saved.get(recipe_id, False))
         self._update_profile_label()
         self._refresh()
 
@@ -1378,6 +1464,8 @@ class MainWindow(QMainWindow):
             "tasks_remove": _lines(self.tasks_remove),
             "files": self.files_tree.entries(),
             "scripts": {phase: _lines(editor) for phase, editor in self.scripts.items()},
+            "steps": {phase: [{"recipe": rid, "enabled": box.isChecked()} for rid, box in boxes]
+                      for phase, boxes in self.step_checks.items()},
             "region": {
                 "timezone": self.timezone.currentText().strip(),
                 "locale": self.locale.currentText().strip() or "en-US",

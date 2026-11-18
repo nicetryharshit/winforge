@@ -32,7 +32,14 @@ The pages go from left to right:
 - **Source:** pick your Windows ISO or extracted folder, click **Read editions**, then choose one.
 - **Debloat:** tick apps, features and services to remove or switch off. ★ marks the recommended ones.
 - **Tweaks:** tick registry tweaks, add custom registry entries, or import `.reg` files.
-- **Scripts:** commands for each setup phase, files and folders to copy into the image (drag and drop from Explorer), drivers, and updates. `SetupComplete.cmd` is written for you.
+- **Files and drivers:** files and folders to copy into the image (drag and drop from Explorer), drivers, and updates. Each file goes to one exact place on the PC.
+- **Run on the PC:** one page per moment Windows reaches, in order. Each page has drivers and installers (where they apply), ready-made steps you tick, and a box for your own commands.
+  - **Before setup finishes:** runs as SYSTEM right after Windows is copied to the PC. Rarely needed.
+  - **After setup, once:** runs once as SYSTEM after setup. Drivers and system changes go here. `SetupComplete.cmd` is written for you.
+  - **First sign-in:** runs once for each user, at that user's first sign-in.
+  - **Every sign-in:** runs every time a user signs in. WinForge writes a script and a scheduled task for it.
+  - **Every boot:** runs every time Windows starts, as SYSTEM. WinForge writes a script and a scheduled task for it.
+- **Ready-made steps** (`winforge/recipes.py`): tidy command sets, such as installing the NVIDIA driver silently or removing its services. Each one is tied to a stage and is added to the image only when ticked. Add your own by adding a `Recipe` there.
 - **Account:** the local account (including the built-in Administrator), autologon, setup screens, time zone, language and keyboard.
 - **Build:** a summary, a **Preview (dry run)** button, and **Build ISO**. The log and stage show what is happening.
 
@@ -87,6 +94,9 @@ A profile is a JSON file. See `profiles/example.json`.
 | `scripts.specialize` | Runs as SYSTEM after install, before the setup screens |
 | `scripts.setupcomplete` | Written to `SetupComplete.cmd`. Runs as SYSTEM before first logon |
 | `scripts.firstlogon` | Runs in order at first logon as the new account |
+| `scripts.everylogon` | Written to `Windows\Setup\Scripts\WinForge-every-sign-in.cmd`. A scheduled task runs it at every sign-in |
+| `scripts.everyboot` | Written to `Windows\Setup\Scripts\WinForge-every-boot.cmd`. A scheduled task runs it at every boot as SYSTEM |
+| `steps` | Ticked ready-made steps per stage, e.g. `{"recipe": "nvidia_silent", "enabled": true}`. Run before the stage's typed commands |
 | `region` | `timezone` (Windows ID, blank keeps the default), `locale` (e.g. `en-US`), `input` (keyboard ID) |
 | `account` | Account name, display name and password, autologon, skip setup screens, `enable_builtin_admin` |
 
@@ -94,9 +104,9 @@ A profile is a JSON file. See `profiles/example.json`.
 
 | Old path | In WinForge |
 |---|---|
-| `sources\$OEM$\$1\...` (appears in `C:\`) | Scripts > Files, with a destination that starts at `C:\`, e.g. `AVReelsClassic` or `Drivers` |
-| `sources\$OEM$\$$\Setup\Scripts\SetupComplete.cmd` | Scripts > SetupComplete tab. It is written for you |
-| Other scripts such as `Config.ps1` | Files, destination `Windows\Setup\Scripts`, then call them from a SetupComplete line |
+| `sources\$OEM$\$1\...` (appears in `C:\`) | Files and drivers page, with a destination that starts at `C:\`, e.g. `AVReelsClassic` or `Drivers` |
+| `sources\$OEM$\$$\Setup\Scripts\SetupComplete.cmd` | After setup, once page, commands box. It is written for you |
+| Other scripts such as `Config.ps1` | Files and drivers page, destination `Windows\Setup\Scripts`, or use Add my own script on the stage page |
 
 The style rules for the editor are in `docs/STYLE.md`.
 
@@ -131,7 +141,7 @@ real build still needs to be tested on Windows.
 ## App, drivers, import and scan
 
 - **App page**: pick your program's folder and .exe. WinForge copies it to `C:\<name>`, can give Everyone write access, and starts it with a sign-in scheduled task (default), a Run entry, or by replacing the Windows shell. It can also launch it as soon as setup finishes.
-- **First-boot drivers and installers** (Scripts > Drivers & updates): driver folders are installed with `pnputil`, installers run silently, both from `C:\Drivers`.
+- **First-boot drivers and installers** (After setup, once page): driver folders are installed with `pnputil`, installers run silently, both from `C:\Drivers`.
 - **Home location**: Account > Home location ID (for example 244 for the United States), applied at first sign-in with `Set-WinHomeLocation`.
 - **Import NTLite preset**: `python -m winforge import-ntlite preset.xml` or Start > Import NTLite preset. Account, sign-in, time zone, first-boot commands, service switches, known update tweaks and `.reg` files are carried over. Everything else is listed as a note.
 - **Scan image**: `python -m winforge scan --source win11.iso --work C:\WinForge\work --out scan.json`, or Debloat > Scan image. Lists the real apps, features, capabilities, services and scheduled tasks. Needs Windows and administrator rights. The parsers are unit-tested, but the scan itself has not been run on a real image yet.

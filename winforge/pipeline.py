@@ -242,6 +242,13 @@ def customise(R: Runner, profile: dict, base: Path, mount: Path, src: Path) -> N
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(setup.encode("utf-8"))
 
+    for rel, text in profile.get("generated", {}).items():
+        target = mount / rel
+        R.log(f"write {target}")
+        if not R.dry_run:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(text.encode("utf-8"))
+
     unattend = src / "autounattend.xml"
     R.log(f"write {unattend}")
     if not R.dry_run:

@@ -8,7 +8,7 @@ from pathlib import Path
 SCHEMA = 1
 HIVES = ("SOFTWARE", "SYSTEM", "DEFAULT")
 REG_TYPES = ("REG_SZ", "REG_DWORD", "REG_QWORD", "REG_EXPAND_SZ", "REG_MULTI_SZ", "REG_BINARY")
-PHASES = ("specialize", "setupcomplete", "firstlogon")
+PHASES = ("specialize", "setupcomplete", "firstlogon", "everylogon", "everyboot")
 APP_MODES = ("task", "run", "shell")
 
 NAME_TOKEN = re.compile(r"^[A-Za-z0-9_.~-]+$")
@@ -40,6 +40,7 @@ def default_profile() -> dict:
         "tasks_remove": [],
         "files": [],
         "scripts": {phase: [] for phase in PHASES},
+        "steps": {phase: [] for phase in PHASES},
         "region": {"timezone": "", "locale": "en-US", "input": "0409:00000409", "geo_id": None},
         "account": {
             "name": "User",
@@ -136,6 +137,17 @@ def validate(p: dict) -> None:
             raise ProfileError("choose the app's .exe on the App page")
         if app["mode"] not in APP_MODES:
             raise ProfileError(f"app mode must be one of {', '.join(APP_MODES)}")
+
+    from .recipes import RECIPES_BY_ID
+    for phase, items in p["steps"].items():
+        if phase not in PHASES:
+            raise ProfileError(f"unknown stage in steps: {phase}")
+        for item in items:
+            recipe = RECIPES_BY_ID.get(item.get("recipe"))
+            if recipe is None:
+                raise ProfileError(f"unknown ready-made step: {item.get('recipe')}")
+            if recipe.phase != phase:
+                raise ProfileError(f"step {recipe.id} belongs to another stage, not {phase}")
 
     unknown = set(p["scripts"]) - set(PHASES)
     if unknown:
