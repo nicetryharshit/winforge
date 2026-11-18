@@ -30,11 +30,20 @@ def default_profile() -> dict:
         "drivers": [],
         "updates": [],
         "registry": [],
+        "reg_files": [],
         "services_disable": [],
         "tasks_remove": [],
         "files": [],
         "scripts": {phase: [] for phase in PHASES},
-        "account": {"name": "User", "password": "", "autologon": True, "skip_oobe": True},
+        "region": {"timezone": "", "locale": "en-US", "input": "0409:00000409"},
+        "account": {
+            "name": "User",
+            "display_name": "",
+            "password": "",
+            "autologon": True,
+            "skip_oobe": True,
+            "enable_builtin_admin": False,
+        },
     }
 
 
@@ -96,6 +105,10 @@ def validate(p: dict) -> None:
             except ValueError:
                 raise ProfileError(f"{where}: {r['type']} needs a number, e.g. 0 or 0x1") from None
 
+    for i, path in enumerate(p["reg_files"]):
+        if not isinstance(path, str) or not path.strip():
+            raise ProfileError(f".reg file entry {i + 1} is empty")
+
     for i, f in enumerate(p["files"]):
         if not f.get("from") or not f.get("to"):
             raise ProfileError(f"file entry {i + 1}: both 'from' and 'to' are required")
@@ -107,6 +120,13 @@ def validate(p: dict) -> None:
     account = p["account"]
     if account["autologon"] and not str(account["name"]).strip():
         raise ProfileError("autologon needs an account name")
+    if account["enable_builtin_admin"] and not str(account["name"]).strip():
+        raise ProfileError("the account name is needed to set up the built-in Administrator")
+
+    region = p["region"]
+    for key in ("timezone", "locale", "input"):
+        if not isinstance(region[key], str):
+            raise ProfileError(f"region.{key} must be text")
 
 
 def load_profile(path: Path) -> dict:

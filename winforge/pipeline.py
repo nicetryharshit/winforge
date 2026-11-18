@@ -19,6 +19,7 @@ from typing import Callable
 
 from .editions import find_edition, parse_wim_info
 from .profile import save_profile
+from .regfile import load_reg_files
 from .unattend import build_setupcomplete, build_unattend
 from .util import is_admin, is_windows, ps_quote
 
@@ -129,6 +130,11 @@ def preflight(profile: dict, base: Path, source: Path, work: Path, out: Path,
     for f in profile["files"]:
         if not (base / f["from"]).exists():
             errors.append(f"file to copy not found: {base / f['from']}")
+    for r in profile["reg_files"]:
+        if not (base / r).exists():
+            errors.append(f".reg file not found: {base / r}")
+    _, reg_warnings = load_reg_files(base, profile["reg_files"])
+    warnings.extend(reg_warnings)
 
     if not dry_run and source.exists():
         # Rough need: the extracted source, the mounted image, and the rebuilt ISO. Folders are not measured.
@@ -161,8 +167,8 @@ def _reg_value_args(name: str) -> list[str]:
     return ["/ve"] if name in ("", "(Default)") else ["/v", name]
 
 
-def apply_registry(R: Runner, profile: dict, mount: Path) -> None:
-    needed = {r["hive"] for r in profile["registry"]}
+def apply_registry(R: Runner, profile: dict, mount: Path, entries: list[dict]) -> None:
+    needed = {r["hive"] for r in entries}
     if profile["services_disable"]:
         needed.add("SYSTEM")
     loaded: list[str] = []
@@ -170,7 +176,7 @@ def apply_registry(R: Runner, profile: dict, mount: Path) -> None:
         for hive in sorted(needed):
             R.run(["reg.exe", "load", f"HKLM\\WF_{hive}", str(mount / HIVE_FILES[hive])])
             loaded.append(hive)
-        for r in profile["registry"]:
+        for r in entries:
             R.run(["reg.exe", "add", f"HKLM\\WF_{r['hive']}\\{r['key']}", *_reg_value_args(r["name"]),
                    "/t", r["type"], "/d", r["data"], "/f"])
         for svc in profile["services_disable"]:
@@ -202,7 +208,10 @@ def customise(R: Runner, profile: dict, base: Path, mount: Path, src: Path) -> N
     for u in profile["updates"]:
         R.run(["dism.exe", f"/Image:{m}", "/Add-Package", f"/PackagePath:{base / u}"])
 
-    apply_registry(R, profile, mount)
+    reg_entries, reg_warnings = load_reg_files(base, profile["reg_files"])
+    for note in reg_warnings:
+        R.log(f"WARNING: {note}")
+    apply_registry(R, profile, mount, list(profile["registry"]) + reg_entries)
 
     for rel in profile["tasks_remove"]:
         target = mount / "Windows" / "System32" / "Tasks" / rel
@@ -296,13 +305,15 @@ def _steps(profile: dict, base: Path, source: Path, work: Path, out: Path,
         R.run(["dism.exe", "/Unmount-Image", f"/MountDir:{mount}", "/Discard"], check=False)
         raise
 
-    if profile["options"]["compress"]:
-        emit("== 6. Re-export the image to drop unused data")
-        tmp = src / "sources" / "install.wim.new"
-        R.run(["dism.exe", "/Export-Image", f"/SourceImageFile:{wim}", f"/SourceIndex:{idx}",
-               f"/DestinationImageFile:{tmp}", "/Compress:max"])
-        if not dry_run:
-            tmp.replace(wim)
+    # Always re-export the chosen edition alone. This drops the other editions from the ISO,
+    # and it makes the chosen edition index 1, which the generated autounattend.xml relies on.
+    emit("== 6. Keep only the chosen edition and re-export")
+    tmp = src / "sources" / "install.wim.new"
+    compression = "max" if profile["options"]["compress"] else "fast"
+    R.run(["dism.exe", "/Export-Image", f"/SourceImageFile:{wim}", f"/SourceIndex:{idx}",
+           f"/DestinationImageFile:{tmp}", f"/Compress:{compression}"])
+    if not dry_run:
+        tmp.replace(wim)
 
     emit("== 7. Build ISO")
     if not dry_run:

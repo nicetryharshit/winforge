@@ -1,8 +1,11 @@
 """WinForge editor (PySide6).
 
-The GUI edits a profile and runs the same `python -m winforge` commands you can
-type yourself, so GUI builds and headless builds behave the same way.
-Real builds need an Administrator session on Windows.
+Layout follows a dense dark DAW: a top transport bar, a browser-style page list on the
+left, one section per page with a title strip, and a status bar at the bottom.
+
+The GUI edits a profile and runs the same `python -m winforge` commands you can type
+yourself, so GUI builds and headless builds behave the same way. Real builds need an
+Administrator session on Windows.
 """
 from __future__ import annotations
 
@@ -12,37 +15,57 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, Qt
+from PySide6.QtCore import QProcess, Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QStackedWidget, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog,
+    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit,
+    QPushButton, QScrollArea, QStackedWidget, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QWidget,
 )
 
 from . import catalog, presets
-from .theme import STYLE, apply_palette
 from .profile import PHASES, ProfileError, default_profile, load_profile, normalise, save_profile
+from .theme import STYLE, apply_palette
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_WORK = r"C:\WinForge\work"
 DEFAULT_OUT = r"C:\WinForge\out\custom.iso"
 
+PAGES = ("Start", "Source", "Debloat", "Tweaks", "Scripts", "Account", "Build")
+
 PHASE_TITLES = {
-    "specialize": ("Specialize", "Runs as SYSTEM after the install finishes copying, before the first setup screens. One command per line."),
-    "setupcomplete": ("SetupComplete", "Runs as SYSTEM once setup finishes, before the first login. Good for system-wide changes."),
-    "firstlogon": ("First logon", "Runs in order the first time the new account signs in. Good for installing apps with winget."),
+    "specialize": ("Specialize",
+                   "Runs as SYSTEM during setup, after files are copied and before the first setup screens. "
+                   "Use it for early system changes. One command per line."),
+    "setupcomplete": ("SetupComplete",
+                      "Runs as SYSTEM once Windows setup finishes, before anyone signs in. Good for installing "
+                      "drivers, removing services and changing system-wide settings."),
+    "firstlogon": ("First logon",
+                   "Runs once, as the new account, the first time it signs in. Good for per-user settings "
+                   "and winget installs."),
 }
 
 SNIPPETS = {
     "Insert a snippet…": "",
+    "Silently install an EXE and wait": 'start /wait "" "C:\\Drivers\\setup.exe" /s',
     "Disable a service": "sc config <ServiceName> start= disabled",
+    "Create a logon scheduled task": 'schtasks /create /tn "MyApp" /tr "C:\\Apps\\app.exe" /sc onlogon /rl highest /f',
+    "Add a Wi-Fi profile from XML": 'netsh wlan add profile filename="C:\\Drivers\\WifiProfile.xml" user=all',
     "Set a registry value (HKLM)": 'reg add "HKLM\\SOFTWARE\\<Path>" /v <Name> /t REG_DWORD /d 1 /f',
     "Install with winget": "winget install --id <Publisher.App> -e --silent --accept-package-agreements --accept-source-agreements",
     "Run a PowerShell script file": 'powershell -NoProfile -ExecutionPolicy Bypass -File "C:\\Windows\\Setup\\Scripts\\myscript.ps1"',
     "Delete a folder": 'rd /s /q "C:\\<Path>"',
 }
 
-PAGES = ("Start", "Source", "Debloat", "Tweaks", "Scripts & files", "Account", "Build")
+TIMEZONES = ["", "Central Standard Time", "Eastern Standard Time", "Pacific Standard Time",
+             "India Standard Time", "GMT Standard Time", "W. Europe Standard Time",
+             "Singapore Standard Time", "Tokyo Standard Time", "AUS Eastern Standard Time"]
+LOCALES = ["en-US", "en-GB", "en-IN"]
+INPUT_LOCALES = ["0409:00000409", "0809:00000809", "4009:00004009"]
 
+
+# ------------------------------------------------------------------ small helpers
 
 def _lines(edit: QPlainTextEdit) -> list[str]:
     return [ln.strip() for ln in edit.toPlainText().splitlines() if ln.strip()]
@@ -52,16 +75,44 @@ def _set_lines(edit: QPlainTextEdit, items) -> None:
     edit.setPlainText("\n".join(items))
 
 
-def _button(text: str, fn, kind: str = "") -> QPushButton:
+def _button(text: str, fn, kind: str = "", tip: str = "") -> QPushButton:
     b = QPushButton(text)
     if kind:
         b.setObjectName(kind)
-    b.clicked.connect(fn)
+    if tip:
+        b.setToolTip(tip)
+    b.clicked.connect(lambda _checked=False: fn())
     return b
 
 
-def _entry_key(r: dict) -> tuple:
-    return (r["hive"], r["key"], r["name"], r["type"], str(r["data"]))
+def _chip(text: str, fn, tip: str) -> QPushButton:
+    b = QPushButton(text)
+    b.setObjectName("chip")
+    b.setToolTip(tip)
+    b.clicked.connect(lambda _checked=False: fn())
+    return b
+
+
+def _section(text: str) -> QLabel:
+    label = QLabel(text.upper())
+    label.setObjectName("section")
+    return label
+
+
+def _help(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setObjectName("help")
+    label.setWordWrap(True)
+    return label
+
+
+def _row(form: QFormLayout, label: str, widget: QWidget, tip: str = "") -> None:
+    caption = QLabel(label)
+    caption.setObjectName("help")
+    if tip:
+        widget.setToolTip(tip)
+        caption.setToolTip(tip)
+    form.addRow(caption, widget)
 
 
 def _wrap(*widgets) -> QWidget:
@@ -69,62 +120,142 @@ def _wrap(*widgets) -> QWidget:
     box = QWidget()
     row = QHBoxLayout(box)
     row.setContentsMargins(0, 0, 0, 0)
+    row.setSpacing(6)
     for i, w in enumerate(widgets):
         row.addWidget(w, 1 if i == 0 else 0)
     return box
 
 
+def _page(title: str, hint: str, scroll: bool) -> tuple[QWidget, QVBoxLayout]:
+    """A page with a title strip. Form pages scroll; tabbed pages fill the window."""
+    page = QWidget()
+    page.setObjectName("page")
+    outer = QVBoxLayout(page)
+    outer.setContentsMargins(0, 0, 0, 0)
+    outer.setSpacing(0)
+
+    head = QFrame()
+    head.setObjectName("pageHeader")
+    hl = QVBoxLayout(head)
+    hl.setContentsMargins(20, 14, 20, 12)
+    hl.setSpacing(4)
+    heading = QLabel(title)
+    heading.setObjectName("pageTitle")
+    sub = QLabel(hint)
+    sub.setObjectName("pageHint")
+    sub.setWordWrap(True)
+    hl.addWidget(heading)
+    hl.addWidget(sub)
+    outer.addWidget(head)
+
+    if scroll:
+        inner = QWidget()
+        inner.setObjectName("page")
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(20, 10, 20, 20)
+        lay.setSpacing(8)
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setWidget(inner)
+        outer.addWidget(area, 1)
+    else:
+        lay = QVBoxLayout()
+        lay.setContentsMargins(20, 10, 20, 20)
+        lay.setSpacing(8)
+        outer.addLayout(lay, 1)
+    return page, lay
+
+
+def _form() -> QFormLayout:
+    form = QFormLayout()
+    form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+    form.setHorizontalSpacing(18)
+    form.setVerticalSpacing(10)
+    return form
+
+
+def _entry_key(r: dict) -> tuple:
+    return (r["hive"], r["key"], r["name"], r["type"], str(r["data"]))
+
+
+# ------------------------------------------------------------------- widgets
+
 class CheckList(QWidget):
-    """A searchable list of checkboxes with recommended, all and none shortcuts."""
+    """A searchable list of options. Each row shows the name and a plain-English note, and a tooltip with details."""
 
     def __init__(self, items):
         super().__init__()
+        self._items = list(items)
         self._recommended = {it.id: it.recommended for it in items}
+
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search…")
+        self.search.setPlaceholderText("Filter by name or description…")
+        self.search.setToolTip("Type to filter the list. Matches the name, the note and the group.")
         self.search.textChanged.connect(self._filter)
+
+        self.count = QLabel()
+        self.count.setObjectName("help")
+        self.count.setToolTip("How many items are ticked. Ticked items are applied to the image.")
+
         self.list = QListWidget()
+        self.list.setObjectName("well")
+        self.list.setAlternatingRowColors(False)
         for it in items:
-            text = ("★ " if it.recommended else "") + it.label
+            text = ("★  " if it.recommended else "     ") + it.label
             if it.note:
-                text += f"  —  {it.note}"
+                text += "   —   " + it.note
             li = QListWidgetItem(text)
             li.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
             li.setCheckState(Qt.CheckState.Unchecked)
             li.setData(Qt.ItemDataRole.UserRole, it.id)
-            li.setToolTip(f"{it.id}  ·  {it.group}")
+            tip = f"{it.label}\n\n{it.note or 'No extra notes.'}\n\nGroup: {it.group}"
+            tip += "\nRecommended: yes" if it.recommended else "\nRecommended: no"
+            tip += f"\nInternal name: {it.id}"
+            li.setToolTip(tip)
             self.list.addItem(li)
+        self.list.itemChanged.connect(lambda _item: self._update_count())
 
-        buttons = QHBoxLayout()
-        for label, fn in (("Select recommended", self.select_recommended),
-                          ("Select all", lambda: self.set_checked(set(self._recommended))),
-                          ("Clear", lambda: self.set_checked(set()))):
-            b = QPushButton(label)
-            b.clicked.connect(fn)
-            buttons.addWidget(b)
-        buttons.addStretch()
+        bar = QHBoxLayout()
+        bar.setSpacing(6)
+        bar.addWidget(self.search, 1)
+        bar.addWidget(self.count)
+        bar.addWidget(_chip("Recommended", self.select_recommended,
+                            "Tick only the items marked ★, the ones that are safe for most machines."))
+        bar.addWidget(_chip("All", lambda: self.set_checked({it.id for it in self._items}),
+                            "Tick every item in this list. Read the notes first."))
+        bar.addWidget(_chip("None", lambda: self.set_checked(set()),
+                            "Untick everything in this list."))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.search)
+        layout.setSpacing(6)
+        layout.addLayout(bar)
         layout.addWidget(self.list, 1)
-        layout.addLayout(buttons)
+        self._update_count()
 
     def _filter(self, text: str) -> None:
-        t = text.lower()
+        t = text.lower().strip()
         for i in range(self.list.count()):
             li = self.list.item(i)
-            li.setHidden(t not in li.text().lower() and t not in li.toolTip().lower())
+            li.setHidden(bool(t) and t not in li.text().lower() and t not in li.toolTip().lower())
+
+    def _update_count(self) -> None:
+        on = len(self.checked())
+        self.count.setText(f"{on} of {len(self._items)} ticked")
 
     def checked(self) -> list[str]:
         return [self.list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.list.count())
                 if self.list.item(i).checkState() == Qt.CheckState.Checked]
 
     def set_checked(self, ids: set) -> None:
+        self.list.blockSignals(True)
         for i in range(self.list.count()):
             li = self.list.item(i)
             on = li.data(Qt.ItemDataRole.UserRole) in ids
             li.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
+        self.list.blockSignals(False)
+        self._update_count()
 
     def select_recommended(self) -> None:
         self.set_checked({k for k, rec in self._recommended.items() if rec})
@@ -133,15 +264,16 @@ class CheckList(QWidget):
 class RowTable(QWidget):
     """An editable grid with add and remove buttons."""
 
-    def __init__(self, headers: list[str]):
+    def __init__(self, headers: list[str], add_tip: str, remove_tip: str):
         super().__init__()
         self.table = QTableWidget(0, len(headers))
+        self.table.setObjectName("well")
         self.table.setHorizontalHeaderLabels(headers)
         self.table.horizontalHeader().setStretchLastSection(True)
-        add = QPushButton("Add row")
-        remove = QPushButton("Remove selected")
-        add.clicked.connect(lambda: self.table.insertRow(self.table.rowCount()))
-        remove.clicked.connect(self._remove)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        add = _button("Add row", lambda: self.table.insertRow(self.table.rowCount()), tip=add_tip)
+        remove = _button("Remove selected", self._remove, tip=remove_tip)
         buttons = QHBoxLayout()
         buttons.addWidget(add)
         buttons.addWidget(remove)
@@ -173,245 +305,400 @@ class RowTable(QWidget):
                 self.table.setItem(r, c, QTableWidgetItem(str(v)))
 
 
+# -------------------------------------------------------------------- window
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("WinForge")
-        self.resize(1150, 820)
+        self.resize(1200, 820)
         self._path: Path | None = None
         self._name = "custom"
         self._description = ""
         self._index: int | None = None
         self._loaded: dict = default_profile()
+        self._baseline: str | None = None
         self._proc: QProcess | None = None
         self._partial = ""
         self._last_kind = ""
 
-        self.nav = QListWidget()
-        self.nav.setObjectName("nav")
-        self.nav.setFixedWidth(200)
-        self.nav.addItems(PAGES)
-        self.stack = QStackedWidget()
-        for page in (self._page_start(), self._page_source(), self._page_debloat(),
-                     self._page_tweaks(), self._page_scripts(), self._page_account(), self._page_build()):
-            self.stack.addWidget(page)
-        self.nav.currentRowChanged.connect(self._on_page_changed)
-
-        self.current_label = QLabel()
-        self.current_label.setObjectName("profile")
-        top = QHBoxLayout()
-        for label, fn in (("Save", self.save_current), ("Save as…", self.save_as)):
-            b = QPushButton(label)
-            b.clicked.connect(fn)
-            top.addWidget(b)
-        top.addStretch()
-        top.addWidget(self.current_label)
-
-        body = QHBoxLayout()
-        body.addWidget(self.nav)
-        body.addWidget(self.stack, 1)
-        root = QWidget()
-        layout = QVBoxLayout(root)
-        layout.addLayout(top)
-        layout.addLayout(body, 1)
-        self.setCentralWidget(root)
         self.setStyleSheet(STYLE)
+        self.setCentralWidget(self._build_shell())
 
-        save_shortcut = QShortcut(QKeySequence.StandardKey.Save, self)
-        save_shortcut.activated.connect(self.save_current)
+        self.stack = QStackedWidget()
+        builders = (self._page_start, self._page_source, self._page_debloat,
+                    self._page_tweaks, self._page_scripts, self._page_account, self._page_build)
+        for build in builders:
+            self.stack.addWidget(build())
+        self.nav.currentRowChanged.connect(self._on_page_changed)
+        self.nav_body.addWidget(self.stack, 1)
+
+        self.validity = QLabel()
+        self.validity.setToolTip("Whether the current settings can be built. Fix the message before building.")
+        self.statusBar().addPermanentWidget(self.validity)
         self.statusBar().showMessage("Ready")
+
+        save_shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Save), self)
+        save_shortcut.activated.connect(self.save_current)
+        self._tick = QTimer(self)
+        self._tick.timeout.connect(self._refresh)
+        self._tick.start(400)
+
         self.refresh_presets()
         self.load_ui(default_profile())
+        self._baseline = self._snapshot(default_profile())
         self.nav.setCurrentRow(0)
 
-    # ------------------------------------------------------------------ pages
+    # ------------------------------------------------------------- shell
+
+    def _build_shell(self) -> QWidget:
+        root = QWidget()
+        root.setObjectName("root")
+        outer = QVBoxLayout(root)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        top = QFrame()
+        top.setObjectName("topbar")
+        tl = QHBoxLayout(top)
+        tl.setContentsMargins(14, 8, 14, 8)
+        tl.setSpacing(8)
+        brand = QLabel("WINFORGE")
+        brand.setObjectName("brand")
+        brand.setToolTip("WinForge: build a customised Windows ISO")
+        self.profile_name = QLabel()
+        self.profile_name.setObjectName("profileName")
+        self.profile_name.setToolTip("The profile you are editing and where it is saved")
+        self.dirty = QLabel("● unsaved changes")
+        self.dirty.setObjectName("dirty")
+        self.dirty.setToolTip("You have changes that are not saved to the profile file yet. Ctrl+S saves them.")
+        tl.addWidget(brand)
+        tl.addSpacing(16)
+        tl.addWidget(self.profile_name)
+        tl.addWidget(self.dirty)
+        tl.addStretch()
+        tl.addWidget(_button("Open…", self.open_profile, tip="Open a saved profile file (.json)"))
+        tl.addWidget(_button("Save", self.save_current, tip="Save the profile to its file (Ctrl+S)"))
+        tl.addWidget(_button("Save as…", self.save_as, tip="Save a copy of this profile to a new file"))
+        tl.addWidget(_button("Build…", lambda: self.go("Build"), "primary",
+                             tip="Open the build page to preview or build the ISO"))
+        outer.addWidget(top)
+
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        self.nav = QListWidget()
+        self.nav.setObjectName("nav")
+        self.nav.setFixedWidth(176)
+        self.nav.setToolTip("Pages, in the order you normally use them")
+        for i, name in enumerate(PAGES, 1):
+            item = QListWidgetItem(f"{i:02d}   {name}")
+            item.setToolTip({
+                "Start": "Presets and saved profiles",
+                "Source": "Pick the Windows ISO or folder, the edition, and output options",
+                "Debloat": "Apps, optional features and services to remove or switch off",
+                "Tweaks": "Registry changes, .reg files and custom registry entries",
+                "Scripts": "Commands and files that run during setup, and drivers",
+                "Account": "The first account, sign-in, time zone and language",
+                "Build": "Preview the plan or build the ISO",
+            }[name])
+            self.nav.addItem(item)
+        self.nav_body = QVBoxLayout()
+        self.nav_body.setContentsMargins(0, 0, 0, 0)
+        body.addWidget(self.nav)
+        body.addLayout(self.nav_body, 1)
+        outer.addLayout(body, 1)
+        return root
+
+    def go(self, name: str) -> None:
+        self.nav.setCurrentRow(PAGES.index(name))
+
+    def _on_page_changed(self, row: int) -> None:
+        self.stack.setCurrentIndex(row)
+        if PAGES[row] == "Start":
+            self.refresh_presets()
+
+    # -------------------------------------------------------------- pages
 
     def _page_start(self) -> QWidget:
-        page = QWidget()
-        lay = QVBoxLayout(page)
-        head = QLabel("Start")
-        head.setObjectName("title")
-        sub = QLabel("Pick a preset to begin, or open a profile you saved before. "
-                     "Presets are starting points; everything can be changed afterwards.")
-        sub.setObjectName("subtitle")
-        sub.setWordWrap(True)
-        lay.addWidget(head)
-        lay.addWidget(sub)
+        page, lay = _page("Start",
+                          "Pick a preset to begin, or open a profile you saved before. Presets are starting points. "
+                          "Everything can be changed on the other pages.", scroll=False)
+        lay.addWidget(_section("Presets"))
+        holder = QWidget()
+        self.preset_box = QVBoxLayout(holder)
+        self.preset_box.setContentsMargins(0, 0, 0, 0)
+        self.preset_box.setSpacing(6)
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setWidget(holder)
+        lay.addWidget(area, 1)
 
-        self.preset_grid = QGridLayout()
-        self.preset_grid.setSpacing(14)
-        grid_holder = QWidget()
-        grid_holder.setLayout(self.preset_grid)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(grid_holder)
-        lay.addWidget(scroll, 1)
-
+        lay.addWidget(_section("Profiles"))
         row = QHBoxLayout()
-        row.setSpacing(8)
-        for label, fn in (("Open profile file…", self.open_profile),
-                          ("Save current as preset…", self.save_as_preset),
-                          ("New blank", self.new_profile)):
-            row.addWidget(_button(label, fn))
+        row.setSpacing(6)
+        row.addWidget(_button("Open profile file…", self.open_profile,
+                              tip="Open a profile you saved earlier (a .json file)"))
+        row.addWidget(_button("New blank profile", self.new_profile,
+                              tip="Start from nothing. Every option stays at its default."))
+        row.addWidget(_button("Save current as preset…", self.save_as_preset,
+                              tip="Save the settings you have now as a named preset you can reuse"))
         row.addStretch()
         lay.addLayout(row)
         return page
 
     def _page_source(self) -> QWidget:
-        page = QWidget()
-        form = QFormLayout(page)
-        self.source = QLineEdit()
-        iso = QPushButton("ISO…")
-        iso.clicked.connect(self._pick_iso)
-        folder = QPushButton("Folder…")
-        folder.clicked.connect(self._pick_folder)
-        form.addRow("Windows ISO or folder", _wrap(self.source, iso, folder))
+        page, lay = _page("Source",
+                          "The Windows ISO or extracted folder you start from. WinForge never edits your original. "
+                          "It copies the source into the work folder and changes that copy.", scroll=True)
+        form = _form()
+        lay.addLayout(form)
 
-        read = QPushButton("Read editions from this source")
-        read.clicked.connect(self.read_editions)
-        form.addRow("", read)
+        form.addRow(_section("Input"))
+        self.source = QLineEdit()
+        self.source.setPlaceholderText("Pick an ISO file or an extracted folder")
+        _row(form, "Windows ISO or folder", _wrap(
+            self.source,
+            _button("ISO…", self._pick_iso, tip="Choose a Windows ISO file downloaded from Microsoft"),
+            _button("Folder…", self._pick_folder, tip="Choose a folder that already contains the Windows files"),
+        ), "The ISO or folder with sources\\install.wim or install.esd inside.")
+        _row(form, "", _button("Read editions from this source", self.read_editions,
+                               tip="Lists the editions inside the image so you can pick one. Nothing is copied."))
         self.edition = QComboBox()
         self.edition.setEditable(True)
         self.edition.setMinimumWidth(340)
+        self.edition.setToolTip("The Windows edition to keep. Every other edition is removed from the output ISO.")
         self.edition.activated.connect(lambda _i: setattr(self, "_index", None))
-        form.addRow("Edition", self.edition)
-        self.edition_hint = QLabel("Choose a source above and click Read editions. "
-                                   "Nothing is copied; WinForge only reads the image list.")
-        self.edition_hint.setWordWrap(True)
-        form.addRow("", self.edition_hint)
+        _row(form, "Edition to keep", self.edition,
+             "Only this edition is kept in the output. Other editions are removed.")
+        self.edition_hint = _help("Choose a source above and click Read editions. "
+                                  "WinForge only reads the list of editions at this stage.")
+        form.addRow(QLabel(""), self.edition_hint)
 
+        form.addRow(_section("Output"))
         self.work = QLineEdit(DEFAULT_WORK)
-        work_btn = QPushButton("Browse…")
-        work_btn.clicked.connect(lambda: self._pick_dir(self.work))
-        form.addRow("Work folder", _wrap(self.work, work_btn))
+        self.work.setToolTip("Scratch folder for the copy and the mounted image. Needs plenty of free space.")
+        _row(form, "Work folder", _wrap(
+            self.work, _button("Browse…", lambda: self._pick_dir(self.work),
+                               tip="Choose the scratch folder for the build")),
+            "Scratch space for the build. Needs about 3 times the ISO size plus 10 GB free.")
         self.out = QLineEdit(DEFAULT_OUT)
-        out_btn = QPushButton("Browse…")
-        out_btn.clicked.connect(self._pick_out)
-        form.addRow("Output ISO", _wrap(self.out, out_btn))
-
-        self.reset_base = QCheckBox("ResetBase: smaller image, but updates can't be uninstalled later")
-        self.compress = QCheckBox("Re-export the image to drop unused data (slower, smaller)")
-        form.addRow("", self.reset_base)
-        form.addRow("", self.compress)
+        self.out.setToolTip("Where the finished ISO is written. An existing file here is replaced.")
+        _row(form, "Output ISO", _wrap(
+            self.out, _button("Browse…", self._pick_out, tip="Choose where to save the finished ISO")),
+            "The finished ISO file. Any existing file with this name is replaced.")
         self.oscdimg = QLineEdit()
-        self.oscdimg.setPlaceholderText("leave blank for the default ADK location")
-        form.addRow("oscdimg.exe (advanced)", self.oscdimg)
+        self.oscdimg.setPlaceholderText("Leave blank to use the Windows ADK default")
+        _row(form, "oscdimg.exe (advanced)", self.oscdimg,
+             "The tool that writes the ISO. It comes with the Windows ADK, Deployment Tools.")
+
+        form.addRow(_section("Image"))
+        self.reset_base = QCheckBox("Shrink the component store (cannot uninstall updates later)")
+        self.reset_base.setToolTip(
+            "Runs DISM ResetBase. Makes the image smaller, but the installed updates can no longer be removed.")
+        self.compress = QCheckBox("Maximum compression (slower build, smaller ISO)")
+        self.compress.setToolTip(
+            "Compresses the image as much as possible. Off uses fast compression, which builds sooner but gives a larger ISO.")
+        form.addRow(QLabel(""), self.reset_base)
+        form.addRow(QLabel(""), self.compress)
+        form.addRow(QLabel(""), _help("Only the edition you chose is kept in the image, whatever these options are."))
         return page
 
     def _page_debloat(self) -> QWidget:
         self.apps = CheckList(catalog.APPS)
         self.features = CheckList(catalog.FEATURES + catalog.CAPABILITIES)
         self.services = CheckList(catalog.SERVICES)
+        self.tasks_remove = QPlainTextEdit()
+        self.tasks_remove.setPlaceholderText("Microsoft\\Windows\\Maintenance\\WinSAT")
+        self.tasks_remove.setToolTip("One scheduled task per line, as a path under Windows\\System32\\Tasks.")
+
         tabs = QTabWidget()
-        tabs.addTab(self.apps, "Apps")
-        tabs.addTab(self.features, "Features && capabilities")
-        tabs.addTab(self.services, "Services")
-        page = QWidget()
-        lay = QVBoxLayout(page)
-        lay.addWidget(QLabel("Tick what to remove or switch off. ★ marks the recommended choices. "
-                             "Items missing from your image are skipped, not treated as errors."))
+        tabs.addTab(self._tab(self.apps, "Apps built into Windows. Removing one only affects the image you build."),
+                    "Apps")
+        tabs.addTab(self._tab(self.features, "Optional Windows features and the capabilities they depend on. "
+                                             "Removing a feature takes it out of the image."), "Features")
+        tabs.addTab(self._tab(self.services, "Background services. Disabled services stay installed, "
+                                             "but they will not start."), "Services")
+        tabs.addTab(self._tab(self.tasks_remove,
+                              "Scheduled tasks to delete from the image, one path per line. Only add a task "
+                              "after you have checked its exact name on a real machine (Task Scheduler)."),
+                    "Scheduled tasks")
+        page, lay = _page("Debloat",
+                          "Choose what to remove or switch off. ★ marks the choices that suit most machines. "
+                          "Items missing from your edition are skipped, not treated as errors.", scroll=False)
         lay.addWidget(tabs, 1)
         return page
 
     def _page_tweaks(self) -> QWidget:
         self.tweaks = CheckList(catalog.TWEAKS)
-        self.custom = RowTable(["Hive", "Key", "Name", "Type", "Data"])
-        page = QWidget()
-        lay = QVBoxLayout(page)
-        lay.addWidget(QLabel("<b>Registry tweaks</b>. Each tick applies a set of registry values to the image."))
-        lay.addWidget(self.tweaks, 2)
-        lay.addWidget(QLabel("<b>Custom registry entries (advanced)</b>. Hive is SOFTWARE, SYSTEM or DEFAULT. "
-                             "Key is a path inside the hive. Leave Name empty to set the default value."))
-        lay.addWidget(self.custom, 1)
+        self.custom = RowTable(["Hive", "Key", "Name", "Type", "Data"],
+                               add_tip="Add an empty registry entry row",
+                               remove_tip="Delete the selected rows")
+        self.reg_files = QPlainTextEdit()
+        self.reg_files.setPlaceholderText("Paths to .reg files, one per line (relative to the profile, or absolute)")
+        self.reg_files.setToolTip("Each file is read and applied to the image. Regedit exports work well.")
+
+        tabs = QTabWidget()
+        tabs.addTab(self._tab(self.tweaks, "Named tweaks. Each tick applies a set of registry values. "
+                                           "Hover over a row for the full explanation."), "Tweaks")
+        custom_page = QWidget()
+        cl = QVBoxLayout(custom_page)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.addWidget(_help("For registry values you know exactly. Hive is SOFTWARE, SYSTEM or DEFAULT "
+                           "(DEFAULT is the new-user profile). Key is a path inside the hive. "
+                           "Leave Name empty to set the key's default value."))
+        cl.addWidget(self.custom, 1)
+        tabs.addTab(custom_page, "Custom entries")
+
+        files_page = QWidget()
+        fl = QVBoxLayout(files_page)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.addWidget(_help("Regedit exports (.reg). Their keys must be under HKEY_LOCAL_MACHINE\\SOFTWARE, "
+                           "HKEY_LOCAL_MACHINE\\SYSTEM or HKEY_CURRENT_USER. Other keys and deletions are skipped "
+                           "and listed as warnings in the build log."))
+        fl.addWidget(self.reg_files, 1)
+        fl.addWidget(_button("Add .reg file…", self._add_reg,
+                             tip="Choose a .reg file to apply to the image"), 0)
+        tabs.addTab(files_page, ".reg files")
+
+        page, lay = _page("Tweaks",
+                          "Registry changes applied to the image. Nothing changes until you build.", scroll=False)
+        lay.addWidget(tabs, 1)
         return page
 
     def _page_scripts(self) -> QWidget:
+        page, lay = _page("Scripts",
+                          "Commands and files that run during setup, plus drivers and updates. Each phase runs at a "
+                          "different time, shown on its tab.", scroll=False)
         tabs = QTabWidget()
         self.scripts: dict[str, QPlainTextEdit] = {}
         for phase in PHASES:
             title, help_text = PHASE_TITLES[phase]
-            page = QWidget()
-            lay = QVBoxLayout(page)
-            lay.addWidget(QLabel(help_text))
+            tab = QWidget()
+            tl = QVBoxLayout(tab)
+            tl.setContentsMargins(0, 0, 0, 0)
+            tl.addWidget(_help(help_text))
             combo = QComboBox()
             combo.addItems(list(SNIPPETS))
+            combo.setToolTip("Insert a ready-made command at the cursor. Replace the <angle brackets> with real values.")
             editor = QPlainTextEdit()
+            editor.setToolTip("One command per line. Commands run in order.")
             self.scripts[phase] = editor
             combo.activated.connect(lambda i, e=editor, c=combo: self._insert_snippet(e, c, i))
-            lay.addWidget(combo)
-            lay.addWidget(editor, 1)
-            tabs.addTab(page, title)
+            tl.addWidget(combo)
+            tl.addWidget(editor, 1)
+            tabs.addTab(tab, title)
 
-        files_page = QWidget()
-        files_lay = QVBoxLayout(files_page)
-        files_lay.addWidget(QLabel("<b>Files to copy into Windows</b>. From is a file or folder (absolute, or relative "
-                                   "to the profile). To is the path inside the image, e.g. Windows\\Setup\\Scripts\\tweak.ps1"))
-        self.files = RowTable(["From", "To"])
-        files_lay.addWidget(self.files, 1)
-        tabs.addTab(files_page, "Files")
+        files = QWidget()
+        fl = QVBoxLayout(files)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.addWidget(_help("Files and folders copied into the image before setup runs. "
+                           "From is relative to the profile, or absolute. To is the path inside Windows, "
+                           "for example Windows\\Setup\\Scripts\\tweak.ps1"))
+        self.files = RowTable(["From", "To"],
+                              add_tip="Add a file to copy into the image",
+                              remove_tip="Remove the selected rows (the files themselves are not deleted)")
+        fl.addWidget(self.files, 1)
+        tabs.addTab(files, "Files")
 
-        drivers_page = QWidget()
-        drv_lay = QVBoxLayout(drivers_page)
+        drivers = QWidget()
+        dl = QVBoxLayout(drivers)
+        dl.setContentsMargins(0, 0, 0, 0)
+        dl.addWidget(_help("Drivers: folders that contain .inf files. They are added recursively. "
+                           "Updates: .msu or .cab packages installed into the image."))
         self.drivers = QPlainTextEdit()
-        drv_btn = QPushButton("Add driver folder…")
-        drv_btn.clicked.connect(self._add_driver)
-        drv_lay.addWidget(QLabel("<b>Drivers</b> (folders containing .inf files, added recursively)"))
-        drv_lay.addWidget(drv_btn)
-        drv_lay.addWidget(self.drivers, 1)
+        self.drivers.setToolTip("One driver folder per line.")
+        dl.addWidget(_button("Add driver folder…", self._add_driver, tip="Choose a folder of drivers to add"), 0)
+        dl.addWidget(self.drivers, 1)
         self.updates = QPlainTextEdit()
-        upd_btn = QPushButton("Add update package…")
-        upd_btn.clicked.connect(self._add_update)
-        drv_lay.addWidget(QLabel("<b>Updates</b> (.msu or .cab packages added to the image)"))
-        drv_lay.addWidget(upd_btn)
-        drv_lay.addWidget(self.updates, 1)
-        tabs.addTab(drivers_page, "Drivers && updates")
+        self.updates.setToolTip("One update package per line.")
+        dl.addWidget(_button("Add update package…", self._add_update,
+                             tip="Choose a .msu or .cab update package to add"), 0)
+        dl.addWidget(self.updates, 1)
+        tabs.addTab(drivers, "Drivers && updates")
 
-        page = QWidget()
-        lay = QVBoxLayout(page)
-        lay.addWidget(tabs)
+        lay.addWidget(tabs, 1)
         return page
 
     def _page_account(self) -> QWidget:
-        page = QWidget()
-        form = QFormLayout(page)
+        page, lay = _page("Account",
+                          "The account the new machine signs in to, sign-in behaviour, and region. "
+                          "These go into autounattend.xml.", scroll=True)
+        form = _form()
+        lay.addLayout(form)
+
+        form.addRow(_section("Account"))
         self.acct_name = QLineEdit()
+        self.acct_name.setToolTip("The account name Windows creates. Use Administrator with the built-in option below.")
+        self.acct_display = QLineEdit()
+        self.acct_display.setToolTip("The name shown on the sign-in screen. Leave blank to use the account name.")
         self.acct_pw = QLineEdit()
         self.acct_pw.setEchoMode(QLineEdit.EchoMode.Password)
-        self.autologon = QCheckBox("Sign in automatically on first boot")
+        self.acct_pw.setToolTip("Leave blank for no password. The password is saved in the profile in plain text.")
+        self.enable_builtin = QCheckBox("Use the built-in Administrator account")
+        self.enable_builtin.setToolTip(
+            "Turns on the built-in Administrator during setup and sets its full name. "
+            "Set the account name to Administrator when you use this.")
+        _row(form, "Account name", self.acct_name)
+        _row(form, "Display name", self.acct_display)
+        _row(form, "Password", self.acct_pw)
+        form.addRow(QLabel(""), self.enable_builtin)
+
+        form.addRow(_section("Sign-in"))
+        self.autologon = QCheckBox("Sign in automatically")
+        self.autologon.setToolTip("Signs the account in without asking for a password at boot.")
         self.skip_oobe = QCheckBox("Skip the out-of-box setup screens")
-        form.addRow("Local account name", self.acct_name)
-        form.addRow("Password (blank for none)", self.acct_pw)
-        form.addRow("", self.autologon)
-        form.addRow("", self.skip_oobe)
-        note = QLabel("The password is saved in the profile in plain text. Keep profile files private.")
-        note.setWordWrap(True)
-        form.addRow("", note)
+        self.skip_oobe.setToolTip("Skips the privacy, sign-in and welcome screens so the machine goes straight to the desktop.")
+        form.addRow(QLabel(""), self.autologon)
+        form.addRow(QLabel(""), self.skip_oobe)
+
+        form.addRow(_section("Region"))
+        self.timezone = QComboBox()
+        self.timezone.setEditable(True)
+        self.timezone.addItems(TIMEZONES)
+        _row(form, "Time zone", self.timezone,
+             "Windows time zone ID, for example India Standard Time. Blank keeps Windows' default.")
+        self.locale = QComboBox()
+        self.locale.setEditable(True)
+        self.locale.addItems(LOCALES)
+        _row(form, "Language and format", self.locale,
+             "Language and date/number format for the system and the first account (e.g. en-US).")
+        self.input_locale = QComboBox()
+        self.input_locale.setEditable(True)
+        self.input_locale.addItems(INPUT_LOCALES)
+        _row(form, "Keyboard layout", self.input_locale,
+             "Keyboard layout ID. 0409:00000409 is US English, 0809:00000809 is UK, 4009:00004009 is English (India).")
+        form.addRow(QLabel(""), _help("The password is saved in the profile in plain text. Keep profile files private."))
         return page
 
     def _page_build(self) -> QWidget:
-        page = QWidget()
-        lay = QVBoxLayout(page)
+        page, lay = _page("Build",
+                          "Preview runs the plan without changing anything. Build copies the source, applies every "
+                          "change, and writes the ISO. Real builds need an Administrator PowerShell on Windows.",
+                          scroll=False)
         self.summary = QLabel()
         self.summary.setWordWrap(True)
+        self.summary.setToolTip("What this profile will do")
         self.problems = QLabel()
         self.problems.setObjectName("banner")
         self.problems.setWordWrap(True)
+        self.problems.setVisible(False)
         lay.addWidget(self.summary)
         lay.addWidget(self.problems)
 
         row = QHBoxLayout()
-        self.btn_preview = QPushButton("Preview (dry run)")
-        self.btn_preview.clicked.connect(lambda: self._run_build(dry=True))
-        self.btn_build = QPushButton("Build ISO")
-        self.btn_build.setObjectName("primary")
-        self.btn_build.clicked.connect(lambda: self._run_build(dry=False))
-        self.btn_cancel = QPushButton("Cancel")
-        self.btn_cancel.clicked.connect(self._cancel)
-        self.btn_cleanup = QPushButton("Clean up leftovers")
-        self.btn_cleanup.setToolTip("Unmount an image left behind by a cancelled or crashed build")
-        self.btn_cleanup.clicked.connect(self._run_cleanup)
-        self.btn_open = QPushButton("Open output folder")
-        self.btn_open.clicked.connect(self._open_output)
+        row.setSpacing(6)
+        self.btn_preview = _button("Preview (dry run)", lambda: self._run_build(dry=True),
+                                   tip="Print every step without changing anything. Safe on any machine.")
+        self.btn_build = _button("Build ISO", lambda: self._run_build(dry=False), "primary",
+                                 tip="Apply every change and write the ISO. Takes a long time.")
+        self.btn_cancel = _button("Cancel", self._cancel,
+                                  tip="Stop the build. Use Clean up leftovers before the next build.")
+        self.btn_cleanup = _button("Clean up leftovers", self._run_cleanup,
+                                   tip="Unmount an image left behind by a cancelled or crashed build")
+        self.btn_open = _button("Open output folder", self._open_output,
+                                tip="Open the folder that contains the finished ISO")
+        self.btn_cancel.setEnabled(False)
         self.btn_open.setEnabled(False)
         for b in (self.btn_preview, self.btn_build, self.btn_cancel, self.btn_cleanup, self.btn_open):
             row.addWidget(b)
@@ -424,9 +711,18 @@ class MainWindow(QMainWindow):
         self.log = QPlainTextEdit()
         self.log.setObjectName("log")
         self.log.setReadOnly(True)
+        self.log.setToolTip("Output from the build. The first ERROR line says what went wrong.")
         lay.addWidget(self.log, 1)
-        self.btn_cancel.setEnabled(False)
         return page
+
+    def _tab(self, widget: QWidget, note: str) -> QWidget:
+        tab = QWidget()
+        tl = QVBoxLayout(tab)
+        tl.setContentsMargins(0, 8, 0, 0)
+        tl.setSpacing(8)
+        tl.addWidget(_help(note))
+        tl.addWidget(widget, 1)
+        return tab
 
     # ----------------------------------------------------------- UI <-> data
 
@@ -439,31 +735,41 @@ class MainWindow(QMainWindow):
         self.reset_base.setChecked(p["options"]["reset_base"])
         self.compress.setChecked(p["options"]["compress"])
         self.oscdimg.setText(p["options"]["oscdimg"])
+
         acct = p["account"]
         self.acct_name.setText(acct["name"])
+        self.acct_display.setText(acct.get("display_name", ""))
         self.acct_pw.setText(acct["password"])
+        self.enable_builtin.setChecked(acct.get("enable_builtin_admin", False))
         self.autologon.setChecked(acct["autologon"])
         self.skip_oobe.setChecked(acct["skip_oobe"])
+
+        region = p["region"]
+        self.timezone.setCurrentText(region["timezone"])
+        self.locale.setCurrentText(region["locale"])
+        self.input_locale.setCurrentText(region["input"])
 
         self.apps.set_checked(set(p["remove"]["appx"]))
         self.features.set_checked(set(p["remove"]["features"]) | set(p["remove"]["capabilities"]))
         self.services.set_checked(set(p["services_disable"]))
+        _set_lines(self.tasks_remove, p["tasks_remove"])
 
-        catalog_keys = {_entry_key(dict(e)) for t in catalog.TWEAKS for e in t.entries}
         present = {_entry_key(r) for r in p["registry"]}
         self.tweaks.set_checked({
             t.id for t in catalog.TWEAKS
             if all(_entry_key(dict(e)) in present for e in t.entries)
         })
+        catalog_keys = {_entry_key(dict(e)) for t in catalog.TWEAKS for e in t.entries}
         self.custom.set_rows([[r["hive"], r["key"], r["name"], r["type"], r["data"]]
                               for r in p["registry"] if _entry_key(r) not in catalog_keys])
+        _set_lines(self.reg_files, p["reg_files"])
 
         self.files.set_rows([[f["from"], f["to"]] for f in p["files"]])
         _set_lines(self.drivers, p["drivers"])
         _set_lines(self.updates, p["updates"])
         for phase, editor in self.scripts.items():
             editor.setPlainText("\n".join(p["scripts"][phase]))
-        self._update_current_label()
+        self._update_profile_label()
         self._refresh()
 
     def collect(self) -> dict:
@@ -504,21 +810,33 @@ class MainWindow(QMainWindow):
             "drivers": _lines(self.drivers),
             "updates": _lines(self.updates),
             "registry": registry,
+            "reg_files": _lines(self.reg_files),
             "services_disable": self.services.checked(),
-            "tasks_remove": list(self._loaded.get("tasks_remove", [])),
+            "tasks_remove": _lines(self.tasks_remove),
             "files": [{"from": a, "to": b} for a, b in self.files.rows()],
             "scripts": {phase: _lines(editor) for phase, editor in self.scripts.items()},
+            "region": {
+                "timezone": self.timezone.currentText().strip(),
+                "locale": self.locale.currentText().strip() or "en-US",
+                "input": self.input_locale.currentText().strip() or "0409:00000409",
+            },
             "account": {
                 "name": self.acct_name.text().strip(),
+                "display_name": self.acct_display.text().strip(),
                 "password": self.acct_pw.text(),
                 "autologon": self.autologon.isChecked(),
                 "skip_oobe": self.skip_oobe.isChecked(),
+                "enable_builtin_admin": self.enable_builtin.isChecked(),
             },
         }
         return normalise(raw)
 
+    @staticmethod
+    def _snapshot(p: dict) -> str:
+        return json.dumps(p, sort_keys=True)
+
     def _refresh(self) -> None:
-        """Re-check the profile and update the status line, the summary and the build buttons."""
+        """Re-check the profile, and update the summary, the banner, the status bar and the dirty marker."""
         try:
             p = self.collect()
         except ProfileError as exc:
@@ -526,38 +844,47 @@ class MainWindow(QMainWindow):
             self.problems.setVisible(True)
             self.summary.setText("")
             self._set_build_enabled(False)
-            self.statusBar().showMessage(f"Problem: {exc}")
+            self.validity.setText(f"Problem: {exc}")
+            self.dirty.setVisible(self._snapshot_dirty())
             return
-        self.problems.setText("")
         self.problems.setVisible(False)
+        self.problems.setText("")
         self.summary.setText(
             f"<b>{p['name']}</b> · {p['edition'] or 'index ' + str(p['index'])}<br>"
-            f"Remove {len(p['remove']['appx'])} apps, {len(p['remove']['features'])} features, "
-            f"{len(p['remove']['capabilities'])} capabilities. Disable {len(p['services_disable'])} services.<br>"
-            f"{len(p['registry'])} registry edits · {len(p['files'])} files · {len(p['drivers'])} driver folders · "
-            f"{len(p['updates'])} update packages · {sum(len(v) for v in p['scripts'].values())} script lines<br>"
+            f"Remove {len(p['remove']['appx'])} apps, {len(p['remove']['features'])} features and "
+            f"{len(p['remove']['capabilities'])} capabilities. Disable {len(p['services_disable'])} services. "
+            f"Delete {len(p['tasks_remove'])} scheduled tasks.<br>"
+            f"{len(p['registry'])} registry edits · {len(p['reg_files'])} .reg files · {len(p['files'])} files · "
+            f"{len(p['drivers'])} driver folders · {len(p['updates'])} update packages · "
+            f"{sum(len(v) for v in p['scripts'].values())} script lines<br>"
             f"Account: {p['account']['name']}"
-            f"{' (signs in automatically)' if p['account']['autologon'] else ''}"
+            f"{' (built-in Administrator)' if p['account']['enable_builtin_admin'] else ''}"
+            f"{' · signs in automatically' if p['account']['autologon'] else ''}<br>"
+            f"Time zone: {p['region']['timezone'] or 'Windows default'} · "
+            f"Language: {p['region']['locale']}"
         )
         self._set_build_enabled(self._proc is None)
-        self.statusBar().showMessage("Profile is valid")
+        self.validity.setText("Profile is valid")
+        self.dirty.setVisible(self._snapshot_dirty())
+
+    def _snapshot_dirty(self) -> bool:
+        try:
+            current = self._snapshot(self.collect())
+        except ProfileError:
+            return True
+        # No baseline means the profile has never been saved (for example, a preset that was just loaded).
+        return self._baseline is None or current != self._baseline
 
     def _set_build_enabled(self, on: bool) -> None:
         self.btn_preview.setEnabled(on)
         self.btn_build.setEnabled(on)
 
-    def _update_current_label(self) -> None:
-        where = str(self._path) if self._path else "unsaved profile"
-        self.current_label.setText(f"{self._name}  ·  {where}")
+    def _update_profile_label(self) -> None:
+        where = str(self._path) if self._path else "not saved yet"
+        self.profile_name.setText(f"{self._name}")
+        self.profile_name.setToolTip(where)
 
-    def _on_page_changed(self, row: int) -> None:
-        self.stack.setCurrentIndex(row)
-        if PAGES[row] == "Build":
-            self._refresh()
-        if PAGES[row] == "Start":
-            self.refresh_presets()
-
-    # ----------------------------------------------------------------- source
+    # ----------------------------------------------------------- source picks
 
     def _pick_iso(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Choose a Windows ISO", "", "ISO image (*.iso)")
@@ -609,9 +936,8 @@ class MainWindow(QMainWindow):
             self.edition.setCurrentIndex(pos)
         else:
             self.edition.setCurrentText(current)
-        self.edition_hint.setText(f"Found {len(editions)} editions. Pick the one to customise.")
+        self.edition_hint.setText(f"Found {len(editions)} editions. Pick the one to keep.")
         self.statusBar().showMessage("Editions loaded")
-        self._refresh()
 
     # --------------------------------------------------------------- scripts
 
@@ -631,6 +957,11 @@ class MainWindow(QMainWindow):
         if path:
             self.updates.appendPlainText(self._store_path(path))
 
+    def _add_reg(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Choose a .reg file", "", "Registry files (*.reg)")
+        if path:
+            self.reg_files.appendPlainText(self._store_path(path))
+
     def _store_path(self, path: str) -> str:
         """Store paths relative to the profile when possible, so profiles stay portable."""
         if self._path:
@@ -643,55 +974,56 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------- presets
 
     def refresh_presets(self) -> None:
-        while self.preset_grid.count():
-            item = self.preset_grid.takeAt(0)
+        while self.preset_box.count():
+            item = self.preset_box.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.hide()
                 widget.setParent(None)
                 widget.deleteLater()
-        for i, info in enumerate(presets.list_presets()):
-            self.preset_grid.addWidget(self._preset_card(info), i // 2, i % 2)
-        self.preset_grid.setRowStretch(self.preset_grid.rowCount(), 1)
+        for info in presets.list_presets():
+            self.preset_box.addWidget(self._preset_row(info))
+        self.preset_box.addStretch(1)
 
-    def _preset_card(self, info) -> QWidget:
+    def _preset_row(self, info) -> QWidget:
         frame = QFrame()
-        frame.setObjectName("presetCard")
-        lay = QVBoxLayout(frame)
-        lay.setContentsMargins(18, 16, 18, 16)
-        lay.setSpacing(8)
+        frame.setObjectName("card")
+        lay = QHBoxLayout(frame)
+        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setSpacing(14)
 
-        head = QHBoxLayout()
+        text = QVBoxLayout()
+        text.setSpacing(3)
         title = QLabel(info.label)
         title.setObjectName("cardTitle")
-        badge = QLabel("Built-in" if info.builtin else "Yours")
-        badge.setObjectName("badge" if info.builtin else "badgeUser")
-        head.addWidget(title)
-        head.addStretch()
-        head.addWidget(badge)
-
         desc = QLabel(info.description)
-        desc.setObjectName("muted")
+        desc.setObjectName("help")
         desc.setWordWrap(True)
+        text.addWidget(title)
+        text.addWidget(desc)
 
-        actions = QHBoxLayout()
-        actions.addWidget(_button("Use this preset", lambda _checked=False, n=info.name: self.use_preset(n), "primary"))
+        tag = QLabel("BUILT-IN" if info.builtin else "YOURS")
+        tag.setObjectName("tagAccent" if info.builtin else "tag")
+        tag.setToolTip("Built-in presets ship with WinForge. Your own presets are saved under your user folder.")
+
+        lay.addLayout(text, 1)
+        lay.addWidget(tag, 0, Qt.AlignmentFlag.AlignTop)
+        lay.addWidget(_button("Load", lambda n=info.name: self.use_preset(n), "primary",
+                              tip="Load these settings into the editor. Nothing is built yet."), 0,
+                      Qt.AlignmentFlag.AlignTop)
         if not info.builtin:
-            actions.addWidget(_button("Delete", lambda _checked=False, n=info.name: self.delete_preset(n), "danger"))
-        actions.addStretch()
-
-        lay.addLayout(head)
-        lay.addWidget(desc)
-        lay.addStretch()
-        lay.addLayout(actions)
+            lay.addWidget(_button("Delete", lambda n=info.name: self.delete_preset(n), "danger",
+                                  tip="Delete this saved preset. Its profile file is removed."), 0,
+                          Qt.AlignmentFlag.AlignTop)
         return frame
 
     def use_preset(self, name: str) -> None:
         profile = presets.load_preset(name)
         self._path = None
         self.load_ui(profile)
+        self._baseline = None  # a preset is not on disk yet, so it always counts as unsaved
         self.statusBar().showMessage(f"Loaded preset '{name}'. Save before building.")
-        self.nav.setCurrentRow(PAGES.index("Source"))
+        self.go("Source")
 
     def save_as_preset(self) -> None:
         name, ok = QInputDialog.getText(self, "Save preset", "Preset name:", text=self._name)
@@ -719,7 +1051,8 @@ class MainWindow(QMainWindow):
     def new_profile(self) -> None:
         self._path = None
         self.load_ui(default_profile())
-        self.nav.setCurrentRow(PAGES.index("Source"))
+        self._baseline = None
+        self.go("Source")
 
     def open_profile(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Open a profile", "", "Profile (*.json)")
@@ -732,7 +1065,8 @@ class MainWindow(QMainWindow):
             return
         self._path = Path(path)
         self.load_ui(profile)
-        self.nav.setCurrentRow(PAGES.index("Source"))
+        self._baseline = self._snapshot(profile)
+        self.go("Source")
 
     def _write(self, path: Path) -> bool:
         try:
@@ -745,7 +1079,9 @@ class MainWindow(QMainWindow):
         save_profile(profile, path)
         self._path = path
         self._name = profile["name"]
-        self._update_current_label()
+        self._baseline = self._snapshot(profile)
+        self._update_profile_label()
+        self._refresh()
         self.statusBar().showMessage(f"Saved {path}")
         return True
 
@@ -766,8 +1102,6 @@ class MainWindow(QMainWindow):
         return self.save_current()
 
     def _run_build(self, dry: bool) -> None:
-        if not self._ensure_saved():
-            return
         if self._proc is not None:
             return
         if not self._ensure_saved():
@@ -775,7 +1109,7 @@ class MainWindow(QMainWindow):
         source = self.source.text().strip()
         if not source:
             QMessageBox.information(self, "Choose a source", "Pick a Windows ISO or folder on the Source page.")
-            self.nav.setCurrentRow(PAGES.index("Source"))
+            self.go("Source")
             return
         if not dry and QMessageBox.question(
                 self, "Build the ISO",
