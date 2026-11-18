@@ -190,7 +190,7 @@ def _form() -> QFormLayout:
     return form
 
 
-_NONATIVE = QFileDialog.Option.DontUseNativeDialog
+_NONATIVE = QFileDialog.Option(0)  # native Windows Explorer dialogs
 
 
 def _qt_open_file(parent, title, directory="", flt=""):
