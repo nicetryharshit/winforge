@@ -1,3 +1,3 @@
-"""WinForge: build custom Windows ISOs from a JSON profile."""
+"""WinForge: build custom Windows ISOs from a profile, from the command line or a GUI."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

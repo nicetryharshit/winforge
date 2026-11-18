@@ -1,21 +1,28 @@
-"""Profile schema: load, validate, save. Pure Python, no Windows dependencies."""
+"""Profile schema: defaults, validation, load and save. No Windows dependencies."""
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
+SCHEMA = 1
 HIVES = ("SOFTWARE", "SYSTEM", "DEFAULT")
 REG_TYPES = ("REG_SZ", "REG_DWORD", "REG_QWORD", "REG_EXPAND_SZ", "REG_MULTI_SZ", "REG_BINARY")
 PHASES = ("specialize", "setupcomplete", "firstlogon")
 
+NAME_TOKEN = re.compile(r"^[A-Za-z0-9_.~-]+$")
+HIVE_PREFIX = re.compile(r"^HK(LM|CU|EY_)", re.IGNORECASE)
+
 
 class ProfileError(ValueError):
-    """Raised when a profile is malformed."""
+    """Raised when a profile is malformed. The message is written for humans."""
 
 
 def default_profile() -> dict:
     return {
+        "schema": SCHEMA,
         "name": "custom",
+        "description": "",
         "edition": "Windows 11 Pro",
         "index": None,
         "options": {"reset_base": False, "compress": True, "oscdimg": ""},
@@ -41,32 +48,64 @@ def _merge(base: dict, extra: dict) -> dict:
 
 
 def normalise(data: dict) -> dict:
-    """Merge user data over the defaults, validate, and return the result."""
+    """Merge user data over the defaults, validate, and return a new dict."""
+    if not isinstance(data, dict):
+        raise ProfileError("a profile must be a JSON object")
     profile = _merge(default_profile(), data)
     validate(profile)
     return profile
 
 
+def _check_tokens(section: str, items) -> None:
+    for item in items:
+        if not isinstance(item, str) or not NAME_TOKEN.match(item):
+            raise ProfileError(f"{section}: '{item}' is not a valid name (letters, digits, . _ ~ - only)")
+
+
 def validate(p: dict) -> None:
+    if p["schema"] != SCHEMA:
+        raise ProfileError(f"unsupported profile schema {p['schema']}; this WinForge reads schema {SCHEMA}")
+    if not str(p["name"]).strip():
+        raise ProfileError("the profile needs a name")
     if not p["edition"] and p["index"] is None:
-        raise ProfileError("set either 'edition' or 'index'")
-    if p["index"] is not None and (not isinstance(p["index"], int) or p["index"] < 1):
-        raise ProfileError("'index' must be a positive integer")
+        raise ProfileError("choose an edition (or an index) on the Source page")
+    idx = p["index"]
+    if idx is not None and (isinstance(idx, bool) or not isinstance(idx, int) or idx < 1):
+        raise ProfileError("the image index must be a positive whole number")
+
+    _check_tokens("remove.appx", p["remove"]["appx"])
+    _check_tokens("remove.features", p["remove"]["features"])
+    _check_tokens("remove.capabilities", p["remove"]["capabilities"])
+    _check_tokens("services_disable", p["services_disable"])
+
     for i, r in enumerate(p["registry"]):
+        where = f"registry entry {i + 1}"
         if r.get("hive") not in HIVES:
-            raise ProfileError(f"registry[{i}]: hive must be one of {', '.join(HIVES)}")
+            raise ProfileError(f"{where}: hive must be one of {', '.join(HIVES)}")
         if r.get("type") not in REG_TYPES:
-            raise ProfileError(f"registry[{i}]: type must be one of {', '.join(REG_TYPES)}")
-        if not r.get("key") or not r.get("name"):
-            raise ProfileError(f"registry[{i}]: 'key' and 'name' are required")
+            raise ProfileError(f"{where}: type must be one of {', '.join(REG_TYPES)}")
+        key = str(r.get("key", "")).strip()
+        if not key or HIVE_PREFIX.match(key):
+            raise ProfileError(f"{where}: the key must be a path inside the hive, e.g. Policies\\Microsoft")
+        r["key"] = key
+        r["name"] = str(r.get("name", ""))  # empty name means the key's default value
         r["data"] = str(r.get("data", ""))
+        if r["type"] in ("REG_DWORD", "REG_QWORD"):
+            try:
+                int(r["data"], 0)
+            except ValueError:
+                raise ProfileError(f"{where}: {r['type']} needs a number, e.g. 0 or 0x1") from None
+
     for i, f in enumerate(p["files"]):
         if not f.get("from") or not f.get("to"):
-            raise ProfileError(f"files[{i}]: 'from' and 'to' are required")
+            raise ProfileError(f"file entry {i + 1}: both 'from' and 'to' are required")
+
     unknown = set(p["scripts"]) - set(PHASES)
     if unknown:
-        raise ProfileError(f"unknown script phase(s): {', '.join(sorted(unknown))}")
-    if p["account"]["autologon"] and not p["account"]["name"]:
+        raise ProfileError(f"unknown script section(s): {', '.join(sorted(unknown))}")
+
+    account = p["account"]
+    if account["autologon"] and not str(account["name"]).strip():
         raise ProfileError("autologon needs an account name")
 
 
