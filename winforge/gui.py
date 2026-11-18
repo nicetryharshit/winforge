@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import catalog, presets
+from .theme import STYLE
 from .profile import PHASES, ProfileError, default_profile, load_profile, normalise, save_profile
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -181,7 +182,8 @@ class MainWindow(QMainWindow):
         self._last_kind = ""
 
         self.nav = QListWidget()
-        self.nav.setFixedWidth(180)
+        self.nav.setObjectName("nav")
+        self.nav.setFixedWidth(200)
         self.nav.addItems(PAGES)
         self.stack = QStackedWidget()
         for page in (self._page_start(), self._page_source(), self._page_debloat(),
@@ -190,7 +192,7 @@ class MainWindow(QMainWindow):
         self.nav.currentRowChanged.connect(self._on_page_changed)
 
         self.current_label = QLabel()
-        self.current_label.setStyleSheet("color: #666;")
+        self.current_label.setObjectName("profile")
         top = QHBoxLayout()
         for label, fn in (("Save", self.save_current), ("Save as…", self.save_as)):
             b = QPushButton(label)
@@ -207,6 +209,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(top)
         layout.addLayout(body, 1)
         self.setCentralWidget(root)
+        self.setStyleSheet(STYLE)
 
         save_shortcut = QShortcut(QKeySequence.StandardKey.Save, self)
         save_shortcut.activated.connect(self.save_current)
@@ -223,6 +226,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(QLabel("<h2>Start</h2><p>Pick a preset to begin, or open a profile you saved before. "
                              "Presets are starting points; everything can be changed afterwards.</p>"))
         self.preset_list = QListWidget()
+        self.preset_list.setObjectName("presets")
         self.preset_list.itemDoubleClicked.connect(lambda _item: self.use_preset())
         lay.addWidget(self.preset_list, 1)
         row = QHBoxLayout()
@@ -285,7 +289,7 @@ class MainWindow(QMainWindow):
         self.services = CheckList(catalog.SERVICES)
         tabs = QTabWidget()
         tabs.addTab(self.apps, "Apps")
-        tabs.addTab(self.features, "Features & capabilities")
+        tabs.addTab(self.features, "Features && capabilities")
         tabs.addTab(self.services, "Services")
         page = QWidget()
         lay = QVBoxLayout(page)
@@ -345,7 +349,7 @@ class MainWindow(QMainWindow):
         drv_lay.addWidget(QLabel("<b>Updates</b> (.msu or .cab packages added to the image)"))
         drv_lay.addWidget(upd_btn)
         drv_lay.addWidget(self.updates, 1)
-        tabs.addTab(drivers_page, "Drivers & updates")
+        tabs.addTab(drivers_page, "Drivers && updates")
 
         page = QWidget()
         lay = QVBoxLayout(page)
@@ -375,8 +379,8 @@ class MainWindow(QMainWindow):
         self.summary = QLabel()
         self.summary.setWordWrap(True)
         self.problems = QLabel()
+        self.problems.setObjectName("banner")
         self.problems.setWordWrap(True)
-        self.problems.setStyleSheet("color: #b00020; font-weight: bold;")
         lay.addWidget(self.summary)
         lay.addWidget(self.problems)
 
@@ -384,6 +388,7 @@ class MainWindow(QMainWindow):
         self.btn_preview = QPushButton("Preview (dry run)")
         self.btn_preview.clicked.connect(lambda: self._run_build(dry=True))
         self.btn_build = QPushButton("Build ISO")
+        self.btn_build.setObjectName("primary")
         self.btn_build.clicked.connect(lambda: self._run_build(dry=False))
         self.btn_cancel = QPushButton("Cancel")
         self.btn_cancel.clicked.connect(self._cancel)
@@ -399,11 +404,11 @@ class MainWindow(QMainWindow):
         lay.addLayout(row)
 
         self.stage = QLabel("Idle")
-        self.stage.setStyleSheet("font-weight: bold;")
+        self.stage.setObjectName("stage")
         lay.addWidget(self.stage)
         self.log = QPlainTextEdit()
+        self.log.setObjectName("log")
         self.log.setReadOnly(True)
-        self.log.setStyleSheet("font-family: Consolas, monospace;")
         lay.addWidget(self.log, 1)
         self.btn_cancel.setEnabled(False)
         return page
@@ -503,11 +508,13 @@ class MainWindow(QMainWindow):
             p = self.collect()
         except ProfileError as exc:
             self.problems.setText(f"Fix this before building: {exc}")
+            self.problems.setVisible(True)
             self.summary.setText("")
             self._set_build_enabled(False)
             self.statusBar().showMessage(f"Problem: {exc}")
             return
         self.problems.setText("")
+        self.problems.setVisible(False)
         self.summary.setText(
             f"<b>{p['name']}</b> · {p['edition'] or 'index ' + str(p['index'])}<br>"
             f"Remove {len(p['remove']['appx'])} apps, {len(p['remove']['features'])} features, "
