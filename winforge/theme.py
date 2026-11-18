@@ -68,11 +68,18 @@ QLineEdit, QComboBox, QPlainTextEdit, QSpinBox {{
 }}
 QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus {{ border: 1px solid {ACCENT}; }}
 QLineEdit:disabled, QComboBox:disabled {{ color: {DIM}; }}
-QComboBox::drop-down {{ border: none; width: 22px; }}
+QComboBox {{ padding-right: 28px; }}
+QComboBox::drop-down {{ border: none; width: 26px; subcontrol-origin: padding; subcontrol-position: center right; }}
+QComboBox:on {{ border: 1px solid {ACCENT}; }}
 QComboBox QAbstractItemView {{
     background: {PANEL_2}; border: 1px solid {LINE_STRONG}; selection-background-color: {ACCENT};
-    selection-color: {ACCENT_TEXT}; outline: none;
+    selection-color: {ACCENT_TEXT}; outline: none; padding: 2px;
 }}
+QComboBox QAbstractItemView::item {{ min-height: 26px; padding: 0 8px; }}
+QComboBox QAbstractItemView::item:hover {{ background: {LINE_STRONG}; color: {TEXT}; }}
+QComboBox QAbstractItemView::item:selected {{ background: {ACCENT}; color: {ACCENT_TEXT}; }}
+QFrame#busyCard {{ background: {PANEL}; border: 1px solid {LINE_STRONG}; border-radius: 3px; }}
+QLabel#busyTitle {{ color: {TEXT}; font-size: 10.5pt; font-weight: 600; }}
 
 /* Lists and tables */
 QListWidget#well, QTreeWidget#well, QTableWidget {{

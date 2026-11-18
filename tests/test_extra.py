@@ -246,3 +246,31 @@ class EditionPickerTests(unittest.TestCase):
         self.assertEqual(w.progress.value(), 500)
         w._progress_line("[==== 50.0% ====]", 8, state)
         self.assertEqual(w.progress.value(), int(4.5 / 8 * 1000))
+
+
+class LockTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from winforge import gui
+        cls.app = QApplication.instance() or QApplication([])
+        cls.window = gui.MainWindow()
+
+    def test_overlay_lock_disables_everything_then_restores(self):
+        w = self.window
+        w._lock("Reading", "x", cancel=lambda: None)
+        self.assertTrue(w.overlay.isVisibleTo(w._root) and not w.nav.isEnabled())
+        self.assertTrue(all(not b.isEnabled() for b in w._top_actions))
+        self.assertFalse(any(w.stack.widget(i).isEnabled() for i in range(w.stack.count())))
+        self.assertFalse(w.save_current())
+        w._unlock()
+        self.assertTrue(w.nav.isEnabled() and not w.overlay.isVisibleTo(w._root))
+        self.assertTrue(all(w.stack.widget(i).isEnabled() for i in range(w.stack.count())))
+
+    def test_build_lock_keeps_only_the_build_page_usable(self):
+        w = self.window
+        w._lock("Build", overlay=False)
+        enabled = [i for i in range(w.stack.count()) if w.stack.widget(i).isEnabled()]
+        self.assertEqual(enabled, [w.stack.count() - 1])
+        w._unlock()

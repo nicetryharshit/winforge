@@ -16,10 +16,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QProcess, Qt, QTimer
-from PySide6.QtGui import QColor, QKeySequence, QPainter, QShortcut
+from PySide6.QtCore import QEvent, QPointF, QProcess, Qt, QTimer
+from PySide6.QtGui import QColor, QKeySequence, QPainter, QPen, QPolygonF, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QProgressBar, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog,
+    QApplication, QCheckBox, QListView, QProgressBar, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit,
     QAbstractItemView, QPushButton, QScrollArea, QStackedWidget, QTabWidget, QTableWidget,
     QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
@@ -217,6 +217,74 @@ def _entry_key(r: dict) -> tuple:
 
 
 # ------------------------------------------------------------------- widgets
+
+class DropDown(QComboBox):
+    """A combo box that looks like a dropdown: a chevron on the right and a styled list that opens below it."""
+
+    def __init__(self):
+        super().__init__()
+        self.setView(QListView())
+        self.setMaxVisibleItems(12)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        c = QColor(DIM if not self.isEnabled() else ACCENT if self.hasFocus() else MUTED)
+        x, y = self.width() - 15, self.height() / 2
+        p.setPen(QPen(c, 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        p.drawPolyline(QPolygonF([QPointF(x - 4, y - 2), QPointF(x, y + 2), QPointF(x + 4, y - 2)]))
+
+
+class BusyOverlay(QWidget):
+    """Covers the pages while something is loading. It swallows every click, and tells the user why."""
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setObjectName("busyOverlay")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setCursor(Qt.CursorShape.BusyCursor)
+        outer = QVBoxLayout(self)
+        outer.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card = QFrame()
+        card.setObjectName("busyCard")
+        card.setFixedWidth(380)
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(22, 18, 22, 18)
+        cl.setSpacing(8)
+        self.title = QLabel()
+        self.title.setObjectName("busyTitle")
+        self.detail = QLabel()
+        self.detail.setObjectName("help")
+        self.detail.setWordWrap(True)
+        self.bar = QProgressBar()
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(3)
+        self.note = QLabel("The window is locked until this finishes.")
+        self.note.setObjectName("help")
+        self.cancel = QPushButton("Cancel")
+        self.cancel.setToolTip("Stop this and unlock the window")
+        cl.addWidget(self.title)
+        cl.addWidget(self.detail)
+        cl.addSpacing(4)
+        cl.addWidget(self.bar)
+        cl.addSpacing(4)
+        cl.addWidget(self.note)
+        cl.addWidget(self.cancel, 0, Qt.AlignmentFlag.AlignRight)
+        outer.addWidget(card)
+        self.hide()
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(10, 10, 10, 170))
+
+    def mousePressEvent(self, event):
+        event.accept()
+
+    def keyPressEvent(self, event):
+        event.accept()
+
 
 class CheckList(QWidget):
     """A searchable checklist. Name is bright, the plain-English description is dim, and ★ marks recommended items."""
@@ -547,6 +615,7 @@ class MainWindow(QMainWindow):
         self._scan_proc = None
         self._scan = None
         self._ed_proc = None
+        self._locked = False
         self._editions_source = None
         self._pstate: dict = {}
         self._last_kind = ""
@@ -606,12 +675,21 @@ class MainWindow(QMainWindow):
         tl.addSpacing(16)
         tl.addWidget(self.profile_name)
         tl.addWidget(self.dirty)
+        self.busy_tag = QLabel("● working, the window is locked")
+        self.busy_tag.setObjectName("dirty")
+        self.busy_tag.setToolTip("WinForge is busy. Editing is switched off until it finishes.")
+        self.busy_tag.hide()
+        tl.addWidget(self.busy_tag)
         tl.addStretch()
-        tl.addWidget(_button("Open…", self.open_profile, tip="Open a saved profile file (.json)"))
-        tl.addWidget(_button("Save", self.save_current, tip="Save the profile to its file (Ctrl+S)"))
-        tl.addWidget(_button("Save as…", self.save_as, tip="Save a copy of this profile to a new file"))
-        tl.addWidget(_button("Build…", lambda: self.go("Build"), "primary",
-                             tip="Open the build page to preview or build the ISO"))
+        self._top_actions = [
+            _button("Open…", self.open_profile, tip="Open a saved profile file (.json)"),
+            _button("Save", self.save_current, tip="Save the profile to its file (Ctrl+S)"),
+            _button("Save as…", self.save_as, tip="Save a copy of this profile to a new file"),
+            _button("Build…", lambda: self.go("Build"), "primary",
+                    tip="Open the build page to preview or build the ISO"),
+        ]
+        for b in self._top_actions:
+            tl.addWidget(b)
         tl.addSpacing(8)
         tl.addWidget(_button("–", self.showMinimized, "winctl", "Minimise"))
         tl.addWidget(_button("▢", self.toggle_maximize, "winctl", "Maximise or restore"))
@@ -619,6 +697,8 @@ class MainWindow(QMainWindow):
         for b in top.findChildren(QPushButton):
             b.setFixedHeight(28)
         outer.addWidget(top)
+        self._top = top
+        self._root = root
 
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
@@ -668,7 +748,60 @@ class MainWindow(QMainWindow):
         self.progress.setFixedHeight(3)
         outer.addWidget(self.progress)
         outer.addWidget(info)
+        self.overlay = BusyOverlay(root)
         return root
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._place_overlay()
+
+    def _place_overlay(self) -> None:
+        if getattr(self, "overlay", None) is not None:
+            top = self._top.height()
+            self.overlay.setGeometry(0, top, self._root.width(), self._root.height() - top)
+
+    def _lock(self, title: str, detail: str = "", cancel=None, overlay: bool = True) -> None:
+        """Switch editing off while work runs, and show that it is off.
+
+        overlay=True dims the pages behind a card (short jobs). overlay=False keeps the Build page usable so
+        its log and Cancel button stay reachable, and locks everything else.
+        """
+        self._locked = True
+        self.busy_tag.show()
+        self.nav.setEnabled(False)
+        for b in self._top_actions:
+            b.setEnabled(False)
+        for i in range(self.stack.count()):
+            keep = (not overlay) and PAGES[i] == "Build"
+            self.stack.widget(i).setEnabled(keep)
+        if overlay:
+            self.overlay.title.setText(title)
+            self.overlay.detail.setText(detail)
+            self.overlay.bar.setRange(0, 0)
+            try:
+                self.overlay.cancel.clicked.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            self.overlay.cancel.setVisible(cancel is not None)
+            if cancel is not None:
+                self.overlay.cancel.clicked.connect(cancel)
+            self._place_overlay()
+            self.overlay.show()
+            self.overlay.raise_()
+            self.overlay.setFocus()
+        else:
+            self.go("Build")
+            self.nav.setCurrentRow(PAGES.index("Build"))
+
+    def _unlock(self) -> None:
+        self._locked = False
+        self.busy_tag.hide()
+        self.overlay.hide()
+        self.nav.setEnabled(True)
+        for b in self._top_actions:
+            b.setEnabled(True)
+        for i in range(self.stack.count()):
+            self.stack.widget(i).setEnabled(True)
 
     def eventFilter(self, obj, event):
         """Live-style Info View: show the description of whatever is under the mouse."""
@@ -747,7 +880,7 @@ class MainWindow(QMainWindow):
             _button("ISO…", self._pick_iso, tip="Choose a Windows ISO file downloaded from Microsoft"),
             _button("Folder…", self._pick_folder, tip="Choose a folder that already contains the Windows files"),
         ), "The ISO or folder with sources\\install.wim or install.esd inside.")
-        self.edition = QComboBox()
+        self.edition = DropDown()
         self.edition.setMinimumWidth(340)
         self.edition.setPlaceholderText("Choose a source first")
         self.edition.setToolTip("The Windows edition to keep. Every other edition is removed from the output ISO.")
@@ -879,7 +1012,7 @@ class MainWindow(QMainWindow):
             tl.setContentsMargins(0, 10, 0, 0)
             tl.setSpacing(8)
             tl.addWidget(_panel_head(help_text))
-            combo = QComboBox()
+            combo = DropDown()
             combo.addItems(list(SNIPPETS))
             combo.setToolTip("Insert a ready-made command at the cursor. Replace the <angle brackets> with real values.")
             editor = QPlainTextEdit()
@@ -971,7 +1104,7 @@ class MainWindow(QMainWindow):
         self.app_exe.setPlaceholderText("for example AVReelsKiosk.exe")
         _row(form, "Program to start", self.app_exe,
              "The .exe inside the app folder, relative to it. Choosing a folder fills this in when it finds one .exe.")
-        self.app_mode = QComboBox()
+        self.app_mode = DropDown()
         self.app_mode.addItem("Scheduled task at sign-in (runs elevated)", "task")
         self.app_mode.addItem("Run entry at sign-in", "run")
         self.app_mode.addItem("Replace the Windows desktop (shell)", "shell")
@@ -1046,17 +1179,17 @@ class MainWindow(QMainWindow):
         form.addRow(QLabel(""), self.skip_oobe)
 
         form.addRow(_section("Region"))
-        self.timezone = QComboBox()
+        self.timezone = DropDown()
         self.timezone.setEditable(True)
         self.timezone.addItems(TIMEZONES)
         _row(form, "Time zone", self.timezone,
              "Windows time zone ID, for example India Standard Time. Blank keeps Windows' default.")
-        self.locale = QComboBox()
+        self.locale = DropDown()
         self.locale.setEditable(True)
         self.locale.addItems(LOCALES)
         _row(form, "Language and format", self.locale,
              "Language and date/number format for the system and the first account (e.g. en-US).")
-        self.input_locale = QComboBox()
+        self.input_locale = DropDown()
         self.input_locale.setEditable(True)
         self.input_locale.addItems(INPUT_LOCALES)
         _row(form, "Keyboard layout", self.input_locale,
@@ -1363,6 +1496,8 @@ class MainWindow(QMainWindow):
         self._editions_source = source
         self._ed_out = ""
         self.edition_hint.setText("Reading the editions…")
+        self._cancelled = False
+        self._lock("Reading the editions", "Opening the source…", cancel=self._cancel_editions)
         self._progress_busy("Reading the editions from the source…")
         proc = QProcess(self)
         proc.setWorkingDirectory(str(PROJECT_ROOT))
@@ -1373,11 +1508,21 @@ class MainWindow(QMainWindow):
         self._ed_proc = proc
         proc.start(sys.executable, ["-u", "-m", "winforge", "editions", source, "--json"])
 
+    def _cancel_editions(self) -> None:
+        self._cancelled = True
+        if self._ed_proc is not None:
+            self._ed_proc.kill()
+
     def _editions_done(self, code: int, _status) -> None:
         proc, self._ed_proc = self._ed_proc, None
         err = bytes(proc.readAllStandardError()).decode("utf-8", "replace").strip()
         proc.deleteLater()
         self._progress_done()
+        self._unlock()
+        if code != 0 and getattr(self, "_cancelled", False):
+            self._editions_source = None
+            self.edition_hint.setText("Cancelled. Use Reload list to try again.")
+            return
         if code != 0:
             self._editions_source = None
             self.edition_hint.setText("Could not read the source. Check the path and try Reload list.")
@@ -1406,12 +1551,17 @@ class MainWindow(QMainWindow):
         """Indeterminate bar for work with no measurable progress."""
         self._busy_jobs = getattr(self, "_busy_jobs", 0) + 1
         self.progress.setRange(0, 0)
+        self.overlay.bar.setRange(0, 0)
+        self.overlay.detail.setText(text)
         self.statusBar().showMessage(text)
 
     def _progress_set(self, fraction: float, text: str = "") -> None:
         self.progress.setRange(0, 1000)
         self.progress.setValue(int(max(0.0, min(1.0, fraction)) * 1000))
+        self.overlay.bar.setRange(0, 1000)
+        self.overlay.bar.setValue(self.progress.value())
         if text:
+            self.overlay.detail.setText(text)
             self.statusBar().showMessage(text)
 
     def _progress_done(self) -> None:
@@ -1479,8 +1629,17 @@ class MainWindow(QMainWindow):
         self._scan_tail = ""
         self.scan_label.setText("Scanning…")
         self._scan_state = {}
+        self._cancelled = False
+        self._lock("Scanning the image", "Copying the image file…", cancel=self._cancel_scan)
         self._progress_busy("Scanning the image…")
         proc.start(sys.executable, args)
+
+    def _cancel_scan(self) -> None:
+        self._cancelled = True
+        if self._scan_proc is not None:
+            self._scan_proc.kill()
+            QMessageBox.information(self, "Cancelled", "If the image stayed mounted, use Clean up leftovers "
+                                    "on the Build page.")
 
     def _scan_output(self) -> None:
         text = bytes(self._scan_proc.readAllStandardOutput()).decode("utf-8", "replace")
@@ -1494,6 +1653,10 @@ class MainWindow(QMainWindow):
     def _scan_done(self, code: int, _status) -> None:
         self._scan_proc = None
         self._progress_done()
+        self._unlock()
+        if code != 0 and getattr(self, "_cancelled", False):
+            self.scan_label.setText("Scan cancelled.")
+            return
         if code != 0:
             self.scan_label.setText("Scan failed.")
             QMessageBox.warning(self, "Scan failed", self._scan_tail or "The scan stopped with an error. "
@@ -1731,6 +1894,8 @@ class MainWindow(QMainWindow):
         return True
 
     def save_current(self) -> bool:
+        if getattr(self, "_locked", False):
+            return False
         return self._write(self._path) if self._path else self.save_as()
 
     def save_as(self) -> bool:
@@ -1780,6 +1945,7 @@ class MainWindow(QMainWindow):
         self._partial = ""
         self._pstate = {}
         self.stage.setText("Starting…")
+        self._lock(title, overlay=False)
         self._progress_busy("Starting…")
         self.log.appendPlainText(f"\n===== {title} =====")
         self._proc = QProcess(self)
@@ -1826,6 +1992,7 @@ class MainWindow(QMainWindow):
         else:
             self._progress_done()
         self._set_busy(False)
+        self._unlock()
         if ok and self._last_kind == "build":
             self.btn_open.setEnabled(True)
         if not ok and self._last_kind == "build":
