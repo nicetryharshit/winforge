@@ -258,17 +258,13 @@ class BusyOverlay(QWidget):
         self.detail = QLabel()
         self.detail.setObjectName("help")
         self.detail.setWordWrap(True)
-        self.bar = QProgressBar()
-        self.bar.setTextVisible(False)
-        self.bar.setFixedHeight(3)
-        self.note = QLabel("The window is locked until this finishes.")
+        self.note = QLabel("The window is locked until this finishes. Progress is shown at the bottom.")
+        self.note.setWordWrap(True)
         self.note.setObjectName("help")
         self.cancel = QPushButton("Cancel")
         self.cancel.setToolTip("Stop this and unlock the window")
         cl.addWidget(self.title)
         cl.addWidget(self.detail)
-        cl.addSpacing(4)
-        cl.addWidget(self.bar)
         cl.addSpacing(4)
         cl.addWidget(self.note)
         cl.addWidget(self.cancel, 0, Qt.AlignmentFlag.AlignRight)
@@ -729,6 +725,7 @@ class MainWindow(QMainWindow):
         info = QFrame()
         info.setObjectName("info")
         info.setFixedHeight(64)
+        self.info_height = 64
         il = QVBoxLayout(info)
         il.setContentsMargins(14, 8, 14, 8)
         il.setSpacing(3)
@@ -744,9 +741,22 @@ class MainWindow(QMainWindow):
         self.progress.setTextVisible(False)
         self.progress.setRange(0, 1000)
         self.progress.setValue(0)
-        self.progress.setToolTip("Shows progress while WinForge reads, scans or builds.")
-        self.progress.setFixedHeight(3)
-        outer.addWidget(self.progress)
+        self.progress.setFixedHeight(4)
+        self.percent = QLabel("")
+        self.percent.setObjectName("percent")
+        self.percent.setFixedWidth(46)
+        self.percent.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.progress_row = QFrame()
+        self.progress_row.setObjectName("progressRow")
+        self.progress_row.setFixedHeight(22)
+        self.progress_row.setToolTip("Progress while WinForge reads, scans or builds. Shows a percentage when it "
+                                     "can be measured, and a moving bar when it can't.")
+        pl = QHBoxLayout(self.progress_row)
+        pl.setContentsMargins(14, 0, 10, 0)
+        pl.setSpacing(10)
+        pl.addWidget(self.progress, 1, Qt.AlignmentFlag.AlignVCenter)
+        pl.addWidget(self.percent)
+        outer.addWidget(self.progress_row)
         outer.addWidget(info)
         self.overlay = BusyOverlay(root)
         return root
@@ -758,7 +768,8 @@ class MainWindow(QMainWindow):
     def _place_overlay(self) -> None:
         if getattr(self, "overlay", None) is not None:
             top = self._top.height()
-            self.overlay.setGeometry(0, top, self._root.width(), self._root.height() - top)
+            bottom = self.progress_row.height() + self.info_height
+            self.overlay.setGeometry(0, top, self._root.width(), self._root.height() - top - bottom)
 
     def _lock(self, title: str, detail: str = "", cancel=None, overlay: bool = True) -> None:
         """Switch editing off while work runs, and show that it is off.
@@ -777,7 +788,6 @@ class MainWindow(QMainWindow):
         if overlay:
             self.overlay.title.setText(title)
             self.overlay.detail.setText(detail)
-            self.overlay.bar.setRange(0, 0)
             try:
                 self.overlay.cancel.clicked.disconnect()
             except (RuntimeError, TypeError):
@@ -1551,15 +1561,14 @@ class MainWindow(QMainWindow):
         """Indeterminate bar for work with no measurable progress."""
         self._busy_jobs = getattr(self, "_busy_jobs", 0) + 1
         self.progress.setRange(0, 0)
-        self.overlay.bar.setRange(0, 0)
+        self.percent.setText("")
         self.overlay.detail.setText(text)
         self.statusBar().showMessage(text)
 
     def _progress_set(self, fraction: float, text: str = "") -> None:
         self.progress.setRange(0, 1000)
         self.progress.setValue(int(max(0.0, min(1.0, fraction)) * 1000))
-        self.overlay.bar.setRange(0, 1000)
-        self.overlay.bar.setValue(self.progress.value())
+        self.percent.setText(f"{self.progress.value() // 10}%")
         if text:
             self.overlay.detail.setText(text)
             self.statusBar().showMessage(text)
@@ -1569,6 +1578,7 @@ class MainWindow(QMainWindow):
         if self._busy_jobs == 0:
             self.progress.setRange(0, 1000)
             self.progress.setValue(0)
+            self.percent.setText("")
 
     def _progress_line(self, line: str, stages: int, state: dict) -> None:
         """Turn '== 3. Mount…' and DISM '[==== 42.0% ====]' lines into one smooth bar."""

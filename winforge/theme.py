@@ -158,8 +158,10 @@ QLabel#infoText {{ color: {MUTED}; }}
 /* Status bar and scrollbars */
 QStatusBar {{ background: {BG}; color: {MUTED}; border-top: 1px solid {LINE}; }}
 QStatusBar QLabel {{ color: {MUTED}; }}
-QProgressBar {{ border: none; background: {SUNKEN}; border-radius: 1px; min-height: 3px; max-height: 3px; }}
-QProgressBar::chunk {{ background: {ACCENT}; }}
+QProgressBar {{ border: none; background: {SUNKEN}; border-radius: 2px; min-height: 4px; max-height: 4px; }}
+QFrame#progressRow {{ background: {BG}; border-top: 1px solid {LINE}; }}
+QLabel#percent {{ color: {ACCENT}; font-size: 8pt; font-weight: 600; }}
+QProgressBar::chunk {{ background: {ACCENT}; border-radius: 2px; }}
 QScrollArea {{ border: none; background: transparent; }}
 QScrollBar:vertical {{ background: transparent; width: 9px; margin: 0; }}
 QScrollBar::handle:vertical {{ background: {LINE_STRONG}; border-radius: 4px; min-height: 28px; }}
