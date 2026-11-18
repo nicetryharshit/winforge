@@ -15,13 +15,11 @@ from pathlib import Path
 from PySide6.QtCore import QProcess, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QInputDialog,
-    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit,
-    QPushButton, QStackedWidget, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QStackedWidget, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from . import catalog, presets
-from .theme import STYLE
+from .theme import STYLE, apply_palette
 from .profile import PHASES, ProfileError, default_profile, load_profile, normalise, save_profile
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +50,14 @@ def _lines(edit: QPlainTextEdit) -> list[str]:
 
 def _set_lines(edit: QPlainTextEdit, items) -> None:
     edit.setPlainText("\n".join(items))
+
+
+def _button(text: str, fn, kind: str = "") -> QPushButton:
+    b = QPushButton(text)
+    if kind:
+        b.setObjectName(kind)
+    b.clicked.connect(fn)
+    return b
 
 
 def _entry_key(r: dict) -> tuple:
@@ -223,21 +229,30 @@ class MainWindow(QMainWindow):
     def _page_start(self) -> QWidget:
         page = QWidget()
         lay = QVBoxLayout(page)
-        lay.addWidget(QLabel("<h2>Start</h2><p>Pick a preset to begin, or open a profile you saved before. "
-                             "Presets are starting points; everything can be changed afterwards.</p>"))
-        self.preset_list = QListWidget()
-        self.preset_list.setObjectName("presets")
-        self.preset_list.itemDoubleClicked.connect(lambda _item: self.use_preset())
-        lay.addWidget(self.preset_list, 1)
+        head = QLabel("Start")
+        head.setObjectName("title")
+        sub = QLabel("Pick a preset to begin, or open a profile you saved before. "
+                     "Presets are starting points; everything can be changed afterwards.")
+        sub.setObjectName("subtitle")
+        sub.setWordWrap(True)
+        lay.addWidget(head)
+        lay.addWidget(sub)
+
+        self.preset_grid = QGridLayout()
+        self.preset_grid.setSpacing(14)
+        grid_holder = QWidget()
+        grid_holder.setLayout(self.preset_grid)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(grid_holder)
+        lay.addWidget(scroll, 1)
+
         row = QHBoxLayout()
-        for label, fn in (("Use preset", self.use_preset),
+        row.setSpacing(8)
+        for label, fn in (("Open profile file…", self.open_profile),
                           ("Save current as preset…", self.save_as_preset),
-                          ("Delete preset", self.delete_preset),
-                          ("Open profile file…", self.open_profile),
                           ("New blank", self.new_profile)):
-            b = QPushButton(label)
-            b.clicked.connect(fn)
-            row.addWidget(b)
+            row.addWidget(_button(label, fn))
         row.addStretch()
         lay.addLayout(row)
         return page
@@ -628,25 +643,50 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------- presets
 
     def refresh_presets(self) -> None:
-        self.preset_list.clear()
-        for info in presets.list_presets():
-            tag = "built-in" if info.builtin else "yours"
-            li = QListWidgetItem(f"{info.label}  [{tag}]\n    {info.description}")
-            li.setData(Qt.ItemDataRole.UserRole, (info.name, info.builtin))
-            self.preset_list.addItem(li)
+        while self.preset_grid.count():
+            item = self.preset_grid.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
+        for i, info in enumerate(presets.list_presets()):
+            self.preset_grid.addWidget(self._preset_card(info), i // 2, i % 2)
+        self.preset_grid.setRowStretch(self.preset_grid.rowCount(), 1)
 
-    def _selected_preset(self):
-        item = self.preset_list.currentItem()
-        if item is None:
-            QMessageBox.information(self, "Pick a preset", "Select a preset in the list first.")
-            return None
-        return item.data(Qt.ItemDataRole.UserRole)
+    def _preset_card(self, info) -> QWidget:
+        frame = QFrame()
+        frame.setObjectName("presetCard")
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(8)
 
-    def use_preset(self) -> None:
-        selected = self._selected_preset()
-        if not selected:
-            return
-        name, _builtin = selected
+        head = QHBoxLayout()
+        title = QLabel(info.label)
+        title.setObjectName("cardTitle")
+        badge = QLabel("Built-in" if info.builtin else "Yours")
+        badge.setObjectName("badge" if info.builtin else "badgeUser")
+        head.addWidget(title)
+        head.addStretch()
+        head.addWidget(badge)
+
+        desc = QLabel(info.description)
+        desc.setObjectName("muted")
+        desc.setWordWrap(True)
+
+        actions = QHBoxLayout()
+        actions.addWidget(_button("Use this preset", lambda _checked=False, n=info.name: self.use_preset(n), "primary"))
+        if not info.builtin:
+            actions.addWidget(_button("Delete", lambda _checked=False, n=info.name: self.delete_preset(n), "danger"))
+        actions.addStretch()
+
+        lay.addLayout(head)
+        lay.addWidget(desc)
+        lay.addStretch()
+        lay.addLayout(actions)
+        return frame
+
+    def use_preset(self, name: str) -> None:
         profile = presets.load_preset(name)
         self._path = None
         self.load_ui(profile)
@@ -665,12 +705,8 @@ class MainWindow(QMainWindow):
         self.refresh_presets()
         self.statusBar().showMessage(f"Saved preset '{name.strip()}'")
 
-    def delete_preset(self) -> None:
-        selected = self._selected_preset()
-        if not selected:
-            return
-        name, builtin = selected
-        if builtin:
+    def delete_preset(self, name: str) -> None:
+        if name in catalog.builtin_presets():
             QMessageBox.information(self, "Built-in preset", "Built-in presets can't be deleted.")
             return
         if QMessageBox.question(self, "Delete preset", f"Delete the preset '{name}'?") != QMessageBox.StandardButton.Yes:
@@ -824,6 +860,7 @@ class MainWindow(QMainWindow):
 def run() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     app.setStyle("Fusion")
+    apply_palette(app)
     window = MainWindow()
     window.show()
     return app.exec()
