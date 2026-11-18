@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+*.iso
+*.wim
+*.esd
+work/
+out/
+logs/
+*.log
+profiles/*.local.json

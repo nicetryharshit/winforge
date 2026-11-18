@@ -1,0 +1,38 @@
+{
+  "name": "example",
+  "edition": "Windows 11 Pro",
+  "options": {
+    "reset_base": false,
+    "compress": true
+  },
+  "remove": {
+    "appx": ["Microsoft.BingNews", "Microsoft.BingWeather", "Microsoft.GetHelp", "Microsoft.ZuneVideo"],
+    "capabilities": [],
+    "features": ["MediaPlayback", "Printing-XPSServices-Features"]
+  },
+  "drivers": [],
+  "updates": [],
+  "registry": [
+    {
+      "hive": "SOFTWARE",
+      "key": "Policies\\Microsoft\\Windows\\DataCollection",
+      "name": "AllowTelemetry",
+      "type": "REG_DWORD",
+      "data": "0"
+    }
+  ],
+  "services_disable": ["DiagTrack"],
+  "tasks_remove": [],
+  "files": [],
+  "scripts": {
+    "specialize": [],
+    "setupcomplete": [],
+    "firstlogon": ["winget install --id 7zip.7zip -e --silent"]
+  },
+  "account": {
+    "name": "Player",
+    "password": "",
+    "autologon": true,
+    "skip_oobe": true
+  }
+}
