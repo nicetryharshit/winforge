@@ -1194,7 +1194,7 @@ class MainWindow(QMainWindow):
         self.app_on.setToolTip("Turn this on to copy a program into the image and have it start automatically.")
         form.addRow(QLabel(""), self.app_on)
         self.app_name = QLineEdit()
-        self.app_name.setPlaceholderText("for example AVReelsKiosk")
+        self.app_name.setPlaceholderText("for example MyKioskApp")
         _row(form, "Folder name on the PC", self.app_name,
              "The app lands in C:\\<this name>. Letters, digits, dot, underscore and dash only.")
         self.app_folder = QLineEdit()
@@ -1204,7 +1204,7 @@ class MainWindow(QMainWindow):
         row.addWidget(browse_folder)
         form.addRow(self._caption("App folder", "The folder on this computer with your app and everything it needs."), row)
         self.app_exe = QLineEdit()
-        self.app_exe.setPlaceholderText("for example AVReelsKiosk.exe")
+        self.app_exe.setPlaceholderText("for example MyKioskApp.exe")
         _row(form, "Program to start", self.app_exe,
              "The .exe inside the app folder, relative to it. Choosing a folder fills this in when it finds one .exe.")
         self.app_mode = DropDown()

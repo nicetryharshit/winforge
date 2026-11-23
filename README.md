@@ -104,7 +104,7 @@ A profile is a JSON file. See `profiles/example.json`.
 
 | Old path | In WinForge |
 |---|---|
-| `sources\$OEM$\$1\...` (appears in `C:\`) | Files and drivers page, with a destination that starts at `C:\`, e.g. `AVReelsClassic` or `Drivers` |
+| `sources\$OEM$\$1\...` (appears in `C:\`) | Files and drivers page, with a destination that starts at `C:\`, e.g. `MyKioskApp` or `Drivers` |
 | `sources\$OEM$\$$\Setup\Scripts\SetupComplete.cmd` | After setup, once page, commands box. It is written for you |
 | Other scripts such as `Config.ps1` | Files and drivers page, destination `Windows\Setup\Scripts`, or use Add my own script on the stage page |
 
